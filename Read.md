@@ -30,9 +30,10 @@ non-obvious things discovered along the way. See **`README.md`** for installatio
 | `xfce4-genmon-plugin` (~52 KB) | installed |
 | `nethogs` (~34 KB) | installed |
 | Today's **total** in the panel | ✅ refreshes every 30 s |
-| Click the panel number → per-app window | ✅ |
+| Click the panel number → per-app window + 30-day chart | ✅ |
 | Collector user-service (writes history) | ✅ enabled, `~16 MB` RSS (`8 MB` PSS) + nethogs `~8 MB` |
-| Unit tests | ✅ 26 / 26 pass |
+| Disk writes | ✅ `~60 MB/day` (measured via `/proc/<pid>/io`; batching keeps it from being gigabytes) |
+| Unit tests | ✅ 35 / 35 pass |
 | Panel item | ✅ one new item; nothing else on the panel is touched |
 
 The panel value is the **exact** kernel total (`/proc/net/dev`). The tool never uses the network itself.
