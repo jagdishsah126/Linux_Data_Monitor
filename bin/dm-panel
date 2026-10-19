@@ -25,7 +25,8 @@ def main(argv):
     try:
         rx, tx = read_totals()
         st.sample_totals(rx, tx)
-        st.prune()
+        # No prune here: the collector prunes hourly, and a prune on every
+        # panel run would mean a write transaction every 30 seconds.
     except Exception:
         # never leave the panel blank because of a transient error
         pass

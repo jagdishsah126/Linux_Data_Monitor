@@ -6,14 +6,21 @@ Design goals:
     one process (the panel and the collector both sample);
   * exactly 30 days of history, pruned automatically;
   * no history depends on the collector staying alive.
+
+Write volume matters here: SQLite checkpoints the WAL into the database and
+deletes the WAL file when the *last* connection closes, so opening a fresh
+connection for every little update rewrote the database several times a second.
+Connections are therefore cached per thread and kept open; call :meth:`close`
+to release one.
 """
 from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 KEEP_DAYS = 30
 
@@ -55,21 +62,33 @@ class Storage:
     def __init__(self, db_path: Path | str = DEFAULT_DB):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = self._connect()
-        try:
-            conn.executescript(SCHEMA)
-            conn.commit()
-        finally:
-            conn.close()
+        self._local = threading.local()
+        conn = self._connect()          # cached, deliberately not closed
+        conn.executescript(SCHEMA)
+        conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=15.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        # keep background work cheap; never block the panel on a lock
-        conn.execute("PRAGMA busy_timeout=15000;")
+        """Return this thread's connection, opening it once and keeping it."""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self.db_path, timeout=15.0)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            # keep background work cheap; never block the panel on a lock
+            conn.execute("PRAGMA busy_timeout=15000;")
+            self._local.conn = conn
         return conn
+
+    def close(self) -> None:
+        """Close this thread's cached connection (the process exit does too)."""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self._local.conn = None
 
     # ---------------------------------------------------------------- meta ---
     @staticmethod
@@ -98,9 +117,9 @@ class Storage:
         day = _day(when)
         stamp = datetime.now().isoformat(timespec="seconds")
         conn = self._connect()
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.isolation_level = None
-            conn.execute("BEGIN IMMEDIATE")
             last_rx = self._get_meta(conn, "last_rx")
             last_tx = self._get_meta(conn, "last_tx")
 
@@ -140,16 +159,12 @@ class Storage:
             except Exception:
                 pass
             raise
-        finally:
-            conn.close()
 
     def get_today(self, when: Optional[date] = None) -> Dict[str, Any]:
         day = _day(when)
-        conn = self._connect()
-        try:
-            row = conn.execute("SELECT * FROM daily WHERE date=?", (day,)).fetchone()
-        finally:
-            conn.close()
+        row = self._connect().execute(
+            "SELECT * FROM daily WHERE date=?", (day,)
+        ).fetchone()
         if not row:
             return {"date": day, "rx_bytes": 0, "tx_bytes": 0, "total_bytes": 0}
         return {
@@ -160,17 +175,28 @@ class Storage:
         }
 
     # ------------------------------------------------------------- per-app ---
-    def add_app_delta(
-        self, app: str, d_rx: int, d_tx: int, when: Optional[date] = None
+    def add_app_deltas(
+        self, deltas: Mapping[str, Sequence[int]], when: Optional[date] = None
     ) -> None:
-        """Add a per-application delta to today's per-app total."""
-        if d_rx == 0 and d_tx == 0:
+        """Add several per-application deltas in a **single** transaction.
+
+        The collector batches its updates so a flush costs one commit instead
+        of one per application per refresh - fewer WAL pages, fewer disk writes.
+        """
+        rows = [
+            (app, int(pair[0]), int(pair[1]))
+            for app, pair in deltas.items()
+            if pair[0] or pair[1]
+        ]
+        if not rows:
             return
         day = _day(when)
         stamp = datetime.now().isoformat(timespec="seconds")
         conn = self._connect()
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute(
+            conn.executemany(
                 """
                 INSERT INTO app_daily(date, app, rx_bytes, tx_bytes, updated_at)
                 VALUES(?, ?, ?, ?, ?)
@@ -179,11 +205,21 @@ class Storage:
                     tx_bytes   = tx_bytes   + excluded.tx_bytes,
                     updated_at = excluded.updated_at
                 """,
-                (day, app, d_rx, d_tx, stamp),
+                [(day, app, rx, tx, stamp) for app, rx, tx in rows],
             )
-            conn.commit()
-        finally:
-            conn.close()
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+
+    def add_app_delta(
+        self, app: str, d_rx: int, d_tx: int, when: Optional[date] = None
+    ) -> None:
+        """Add one per-application delta to today's per-app total."""
+        self.add_app_deltas({app: (d_rx, d_tx)}, when=when)
 
     def get_today_apps(
         self, when: Optional[date] = None, limit: Optional[int] = None
@@ -195,25 +231,17 @@ class Storage:
         )
         if limit:
             sql += f" LIMIT {int(limit)}"
-        conn = self._connect()
-        try:
-            rows = conn.execute(sql, (day,)).fetchall()
-        finally:
-            conn.close()
+        rows = self._connect().execute(sql, (day,)).fetchall()
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------ history ---
     def get_history(self, days: int = KEEP_DAYS) -> List[Dict[str, Any]]:
         cutoff = (date.today() - timedelta(days=days - 1)).isoformat()
-        conn = self._connect()
-        try:
-            rows = conn.execute(
-                "SELECT date, rx_bytes, tx_bytes, (rx_bytes + tx_bytes) AS total_bytes "
-                "FROM daily WHERE date >= ? ORDER BY date ASC",
-                (cutoff,),
-            ).fetchall()
-        finally:
-            conn.close()
+        rows = self._connect().execute(
+            "SELECT date, rx_bytes, tx_bytes, (rx_bytes + tx_bytes) AS total_bytes "
+            "FROM daily WHERE date >= ? ORDER BY date ASC",
+            (cutoff,),
+        ).fetchall()
         return [dict(r) for r in rows]
 
     def get_series(
@@ -235,11 +263,7 @@ class Storage:
                    "WHERE date >= ? AND app = ?")
             params = (cutoff, app)
 
-        conn = self._connect()
-        try:
-            found = {r["date"]: r for r in conn.execute(sql, params)}
-        finally:
-            conn.close()
+        found = {r["date"]: r for r in self._connect().execute(sql, params)}
 
         series: List[Dict[str, Any]] = []
         for offset in range(days):
@@ -255,14 +279,10 @@ class Storage:
     def get_app_names(self, days: int = KEEP_DAYS) -> List[str]:
         """Application names with per-app data in the last ``days`` days."""
         cutoff = (date.today() - timedelta(days=days - 1)).isoformat()
-        conn = self._connect()
-        try:
-            rows = conn.execute(
-                "SELECT DISTINCT app FROM app_daily WHERE date >= ? ORDER BY app",
-                (cutoff,),
-            ).fetchall()
-        finally:
-            conn.close()
+        rows = self._connect().execute(
+            "SELECT DISTINCT app FROM app_daily WHERE date >= ? ORDER BY app",
+            (cutoff,),
+        ).fetchall()
         return [r["app"] for r in rows]
 
     # ------------------------------------------------------------ pruning ---
@@ -270,11 +290,8 @@ class Storage:
         """Delete records older than ``keep_days`` (keeps today + previous N-1)."""
         cutoff = (date.today() - timedelta(days=keep_days - 1)).isoformat()
         conn = self._connect()
-        try:
-            cur = conn.execute("DELETE FROM daily WHERE date < ?", (cutoff,))
-            removed = cur.rowcount
-            conn.execute("DELETE FROM app_daily WHERE date < ?", (cutoff,))
-            conn.commit()
-            return removed
-        finally:
-            conn.close()
+        cur = conn.execute("DELETE FROM daily WHERE date < ?", (cutoff,))
+        removed = cur.rowcount
+        conn.execute("DELETE FROM app_daily WHERE date < ?", (cutoff,))
+        conn.commit()
+        return removed

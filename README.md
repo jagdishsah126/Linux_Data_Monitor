@@ -33,7 +33,9 @@ silently. This project deliberately does the opposite and **only measures**:
 | **No root daemon** | The collector runs as a **user** service. |
 | **No firewall, no enforcement** | Nothing is ever blocked. Network configuration is untouched. |
 | **No cloud, no telemetry** | Nothing leaves your machine. The tool uses **zero bytes** of network itself. |
-| **Genuinely cheap** | ~8 MB RAM and one small SQLite file. |
+| **Genuinely cheap** | ~16 MB resident for the collector (8 MB PSS) plus ~8 MB for nethogs, one SQLite
+file of a few tens of KB, no idle CPU, and **~60 MB/day** of disk writes (measured with
+`/proc/<pid>/io` — write batching keeps a small tool from becoming a gigabytes-a-day one). |
 
 ## Features
 
@@ -122,7 +124,7 @@ TOTAL (all)                  total  98.1 MB   [per-app is best-effort]
 ┌─────────────────────────┐
 │  /proc/net/dev          │  exact byte counters, free, no privilege
 └───────────┬─────────────┘
-            │ every 60 s
+            │ every 30 s
             ▼
 ┌─────────────────────────┐        ┌──────────────────────────┐
 │  dm-collector           │◄───────│  nethogs -t -d 5 -v 2    │  per-application
@@ -157,6 +159,21 @@ TOTAL (all)                  total  98.1 MB   [per-app is best-effort]
 - ⚠️ **VPNs:** if you use one, decide whether to count the VPN interface — counting both it and the
   physical interface would double-count.
 
+## Tuning
+
+The defaults are tuned for the metered, low-power case. Override them in the service environment
+(`systemctl --user edit data-monitor-collector`, then add `Environment=` lines) if you want a
+finer-grained record:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DATA_MONITOR_TOTALS` | `30` | seconds between exact total samples |
+| `DATA_MONITOR_FLUSH` | `30` | seconds between per-app database flushes — updates are batched so each flush is a single transaction |
+| `DATA_MONITOR_POLL` | `5` | nethogs `-d` refresh interval, in seconds (larger = less CPU) |
+| `DATA_MONITOR_DB` | `~/.local/share/data-monitor/monitor.db` | where the history lives |
+
+Lowering them costs disk writes, not network data: the tool itself never uses the network.
+
 ## Uninstall
 
 ```bash
@@ -189,7 +206,7 @@ Linux_Data_Monitor/
 │   ├── install-user.sh            ← no sudo: ~/.local/bin links + user service + panel item
 │   ├── setup-panel.sh             ← add / repair (`--remove`) the panel item
 │   └── uninstall.sh               ← cleanly reverses everything
-└── tests/                         ← 33 unit tests, no network, no writes outside temp
+└── tests/                         ← 35 unit tests, no network, no writes outside temp
 ```
 
 Run the tests any time:

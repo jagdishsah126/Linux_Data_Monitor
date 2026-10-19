@@ -3,11 +3,16 @@
 
 Runs as a *user* systemd service.  No root, no firewall, no network access.
 
-  * totals  : sampled from /proc/net/dev every POLL seconds (always works);
+  * totals  : sampled from /proc/net/dev every TOTALS_EVERY seconds;
   * per-app : parsed from ``nethogs -t`` when nethogs is installed and the
               binary has been granted packet-capture capability.
 
 If nethogs is missing or fails, totals keep working on their own.
+
+Disk writes are kept small deliberately: connections are reused, per-app
+deltas are accumulated in memory and flushed in one transaction every
+APP_FLUSH seconds, and totals are sampled at 30 s (the deltas come from kernel
+counters, so a longer interval loses nothing).
 """
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Dict, List
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 
@@ -25,7 +31,9 @@ from counter import read_totals                                # noqa: E402
 from storage import Storage                                     # noqa: E402
 from nethogs_parse import parse_trace_line, TraceAccumulator    # noqa: E402
 
-POLL = float(os.environ.get("DATA_MONITOR_POLL", "5"))
+POLL = float(os.environ.get("DATA_MONITOR_POLL", "5"))            # nethogs -d
+TOTALS_EVERY = float(os.environ.get("DATA_MONITOR_TOTALS", "30"))
+APP_FLUSH = float(os.environ.get("DATA_MONITOR_FLUSH", "30"))
 PRUNE_EVERY = 3600.0
 
 _stop = threading.Event()
@@ -46,7 +54,7 @@ def totals_worker(st: Storage) -> None:
                 last_prune = time.time()
         except Exception as exc:  # keep the loop alive no matter what
             log(f"totals error: {exc}")
-        _stop.wait(POLL)
+        _stop.wait(TOTALS_EVERY)
 
 
 def run_nethogs(st: Storage) -> None:
@@ -57,6 +65,14 @@ def run_nethogs(st: Storage) -> None:
         return
 
     acc = TraceAccumulator()
+    pending: Dict[str, List[int]] = {}
+    last_flush = time.time()
+
+    def flush() -> None:
+        if pending:
+            st.add_app_deltas(pending)
+            pending.clear()
+
     cmd = [nethogs, "-t", "-d", str(max(1, int(POLL))), "-v", "2"]
     log("starting: " + " ".join(cmd))
     proc = subprocess.Popen(
@@ -74,8 +90,15 @@ def run_nethogs(st: Storage) -> None:
             # display name: unrelated processes share a name ("brave",
             # "Unknown"), and their counters share no baseline.
             d_tx, d_rx = acc.feed(entry.key, entry.sent, entry.recv)
-            st.add_app_delta(entry.app, d_rx, d_tx)
+            if d_rx or d_tx:
+                total = pending.setdefault(entry.app, [0, 0])
+                total[0] += d_rx
+                total[1] += d_tx
+            if time.time() - last_flush >= APP_FLUSH:
+                flush()
+                last_flush = time.time()
     finally:
+        flush()                       # never lose the last partial window
         try:
             proc.terminate()
         except Exception:

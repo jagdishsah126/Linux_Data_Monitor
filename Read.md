@@ -17,7 +17,7 @@ non-obvious things discovered along the way. See **`README.md`** for installatio
 - ✅ Reuse the good parts of the earlier `Linux Data Guardian` prototype (copy only)
 
 > ✅ **Status: implemented.** The panel shows today's total (e.g. `▲▼ 69.2 MB`) and clicking it opens the
-> per-application list. The collector user-service is enabled and 33 unit tests pass.
+> per-application list. The collector user-service is enabled and 35 unit tests pass.
 
 ---
 
@@ -31,7 +31,7 @@ non-obvious things discovered along the way. See **`README.md`** for installatio
 | `nethogs` (~34 KB) | installed |
 | Today's **total** in the panel | ✅ refreshes every 30 s |
 | Click the panel number → per-app window | ✅ |
-| Collector user-service (writes history) | ✅ enabled, `~7 MB` RAM |
+| Collector user-service (writes history) | ✅ enabled, `~16 MB` RSS (`8 MB` PSS) + nethogs `~8 MB` |
 | Unit tests | ✅ 26 / 26 pass |
 | Panel item | ✅ one new item; nothing else on the panel is touched |
 
@@ -96,7 +96,7 @@ item can be added or repaired at any time.
 
 Two things are needed:
 
-**(A) Today's total** — easy and exact. Your Linux kernel already counts every byte through your network card in a free file called `/proc/net/dev`. A tiny script reads it every minute, adds up the difference, and prints one number in the panel. **No root. No downloads for this part. It never uses the internet itself.**
+**(A) Today's total** — easy and exact. Your Linux kernel already counts every byte through your network card in a free file called `/proc/net/dev`. A tiny script reads it every 30 seconds, adds up the difference, and prints one number in the panel. **No root. No downloads for this part. It never uses the internet itself.**
 
 **(B) Per-application usage** — this is the hard part, and I must be honest about why.
 
@@ -191,7 +191,7 @@ Two engines, one panel:
 ### 4.1 Engine 1 — Total (exact, zero-cost)
 
 ```
-/proc/net/dev ──(read every 60s, free, no root)──► tiny script ──► writes today's total ──► panel "13.6 MB"
+/proc/net/dev ──(read every 30s, free, no root)──► tiny script ──► writes today's total ──► panel "13.6 MB"
 ```
 
 - Source of truth: kernel counters. Counts **all** interfaces except `lo`.
@@ -239,7 +239,7 @@ nethogs (packet capture) ──► tiny Python parser ──► per-app daily to
 
 ## 5. Panel & popup
 
-- **In the panel:** `genmon` runs our script every 60 s and prints e.g. `▲▼ 13.6 MB`.
+- **In the panel:** `genmon` runs our script every 30 s and prints e.g. `▲▼ 13.6 MB`.
 - **On click:** genmon runs a command that opens a small window with two tabs — **Today** (per-app
   usage: name, ↓, ↑, total) and **Chart** (a 30-day line graph you can filter to a single app).
 - Your existing panel is **not reset or reconfigured** — we only *add* one item.
@@ -317,7 +317,7 @@ Linux_Data_Monitor/
     └── test_storage.py
 ```
 
-Run the tests any time with: `python3 -m unittest discover -s tests` (33 tests, no network, no writes
+Run the tests any time with: `python3 -m unittest discover -s tests` (35 tests, no network, no writes
 outside a temp directory).
 
 ### 7.2 The one-time setup commands actually used
@@ -367,7 +367,7 @@ No root daemon, no firewall, no changes to network configuration.
 | --- | --- | --- | --- |
 | M1 | Prove totals | Script prints today's total; cross-checked against an independent counter | 🟢 |
 | M2 | Edge cases | Reboot mid-day, interface down/up, date rollover, counter reset | 🟢 |
-| M3 | Panel integration | Number appears in panel, refreshes every 60 s | 🟢 |
+| M3 | Panel integration | Number appears in panel, refreshes every 30 s | 🟢 |
 | M4 | Measure resources | Confirm RAM/CPU/disk targets (replace estimates with readings) | 🟢 |
 | M5 | Install/uninstall notes | Survives re-login; clean removal | 🟢 |
 | M6 | Per-app collector | nethogs → user service → SQLite; verify with controlled traffic | 🟡 |

@@ -69,6 +69,26 @@ class StorageTests(unittest.TestCase):
         self.st.add_app_delta("x", 0, 0)
         self.assertEqual(self.st.get_today_apps(), [])
 
+    def test_bulk_app_deltas_match_single_calls(self):
+        # The collector flushes a whole window in one transaction; the result
+        # must be identical to adding each delta on its own.
+        self.st.add_app_deltas({"brave": [500, 100], "apt": [10, 5]})
+        self.st.add_app_deltas({"brave": [250, 50], "zero": [0, 0]})
+        apps = {a["app"]: a for a in self.st.get_today_apps()}
+        self.assertEqual(apps["brave"]["rx_bytes"], 750)
+        self.assertEqual(apps["brave"]["tx_bytes"], 150)
+        self.assertEqual(apps["apt"]["rx_bytes"], 10)
+        self.assertNotIn("zero", apps)          # nothing to record
+        self.assertEqual(self.st.add_app_deltas({}), None)
+
+    def test_connection_is_reused(self):
+        # One connection per thread, never closed per call - closing the last
+        # connection makes SQLite checkpoint and rewrite the database.
+        self.assertIs(self.st._connect(), self.st._connect())
+        first = self.st._connect()
+        self.st.add_app_delta("brave", 1, 1)
+        self.assertIs(self.st._connect(), first)
+
     def test_prune_removes_old_rows(self):
         old = date.today() - timedelta(days=40)
         self.st.add_app_delta("oldapp", 10, 10, when=old)
