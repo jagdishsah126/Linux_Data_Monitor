@@ -68,12 +68,17 @@ cd Linux_Data_Monitor
 sudo bash scripts/install-system.sh
 ```
 
-This installs two small packages and grants `nethogs` one **narrow, reversible** capability:
+This installs two small packages and, if needed, grants `nethogs` a capability:
 
 | Package | Size (`.deb`) | Purpose |
 | --- | --- | --- |
 | `xfce4-genmon-plugin` | ≈ 52 KB | The panel indicator. |
 | `nethogs` | ≈ 34 KB | Per-application attribution. |
+
+**It never downloads on its own.** The script installs from your local package cache first and, if
+something is missing, stops and asks before downloading anything (this project is used on metered
+connections). For unattended setups, approve it up front: `sudo bash scripts/install-system.sh
+--allow-download`.
 
 ```bash
 # the only privileged change the project makes to your system:
@@ -83,7 +88,27 @@ sudo setcap cap_net_raw,cap_net_admin+eip /usr/sbin/nethogs
 It does **not** install a root daemon, does **not** change firewall rules, and does **not** touch your
 network configuration.
 
-**Undo at any time:** `sudo setcap -r /usr/sbin/nethogs`
+**What the capability really is.** `nethogs` must capture packets, so it needs privileges that a
+normal program does not have. A *file* capability grants them to that one binary instead of to a
+root daemon:
+
+| Capability | Why it is needed |
+| --- | --- |
+| `cap_net_raw` | open raw sockets — i.e. actually read the packets |
+| `cap_net_admin` | put the interface into promiscuous mode |
+
+`cap_net_admin` is **not** a narrow, read-only permission — it is the same capability that allows
+reconfiguring interfaces and routes. It is scoped to this one executable and it is reversible, but
+two consequences are worth knowing:
+
+- file capabilities apply to **every user** who can run that executable (on a single-user laptop
+  that is moot; on a shared machine it is not);
+- they are **silently lost when the package manager replaces the file** — an `apt upgrade nethogs`
+  drops them. Re-run `scripts/install-system.sh` afterwards. The collector notices if per-app data
+  stops and logs the fix to its journal; the exact total is unaffected either way.
+
+**Undo at any time:** `sudo setcap -r /usr/sbin/nethogs` (or just run `scripts/uninstall.sh` with
+`sudo`, which finds the right path for you).
 
 ### Step 2 — user setup (no `sudo`)
 
@@ -94,6 +119,13 @@ bash scripts/install-user.sh
 This links the commands into `~/.local/bin`, enables the **user** service
 `data-monitor-collector.service`, and adds **one new item** to your existing XFCE panel. Your current
 panel layout is not reset or reconfigured — nothing else on the panel is touched.
+
+`genmon` is a *generic* widget, so plenty of people already have one (a CPU meter, a weather
+indicator). The installer identifies **its own** widget by the command inside that widget's config
+file, so an unrelated `genmon` widget is never reused, overwritten or removed. It also detects which
+panel to add to (the one holding the task list) instead of assuming `panel-2`, and saves the previous
+plugin list to `~/.local/share/data-monitor/panel-ids.backup` before changing it. Force a panel with
+`bash scripts/setup-panel.sh --panel 1`.
 
 > If the panel item does not appear immediately, re-run `bash scripts/setup-panel.sh` or restart the
 > panel once (`xfce4-panel -r`). See [The genmon gotcha](#the-genmon-gotcha).
@@ -147,17 +179,29 @@ TOTAL (all)                  total  98.1 MB   [per-app is best-effort]
 
 ## Accuracy — an honest summary
 
-- ✅ **The total is exact.** It includes every application and all system traffic, and it survives
-  reboots and network changes.
-- ⚠️ **Per-app is best-effort.** Traffic that cannot be attributed to a process (other users, system
-  services, very short-lived connections) is shown as a single **`Unknown`** row instead of being
-  hidden. Per-app rows will therefore **not** sum exactly to the total.
+- ✅ **The total is exact in a precise sense: it is the sum of the kernel's per-interface byte
+  counters** (`/proc/net/dev`). That covers every application and all system traffic, and it survives
+  reboots and network changes. Loopback is excluded, and so are the virtual devices that only sit in
+  front of a counted physical one — `docker*`, `veth*`, `virbr*`, `br-*`, `vmnet*`, `vboxnet*`
+  otherwise a container download is counted three times on one machine.
+- ⚠️ **Overlapping interfaces still double count.** `/proc/net/dev` is a per-interface statistics
+  interface, not a deduplicated internet-usage counter. A VPN counted on both the tunnel and the
+  physical interface gives both; a hand-made bridge (`br0`) plus its port counts twice.
+  `DATA_MONITOR_EXCLUDE` is the tool for that — see [Tuning](#tuning).
+- ⚠️ **Per-app is best-effort**, and the `Unknown` row is exactly what `nethogs` could **not**
+  attribute (other users, system services, connections too short-lived to catch). It is not a
+  calculated "total minus the named applications". Per-app rows therefore never sum exactly to the
+  total, and they must never exceed it.
 - ⚠️ **Per-app figures only exist from the moment the capability is granted** — there is no history
   to back-fill.
 - ⚠️ **The first day is partial.** Today's total starts counting when the tool is first installed, so
   day one may understate the hours before that. Every following day is complete.
-- ⚠️ **VPNs:** if you use one, decide whether to count the VPN interface — counting both it and the
-  physical interface would double-count.
+- ⚠️ **A day boundary is a sampling boundary.** Totals are sampled every 30 s, so the traffic of the
+  interval that contains midnight is credited to the day the sample lands on — a few seconds' worth,
+  once a day.
+- ⚠️ **Traffic in a gap is not credited to anyone.** If the machine reboots, or the monitor is
+  stopped for a while, the bytes that flowed meanwhile are dropped rather than dumped into the day
+  the monitor comes back. A guess would be worse than a small hole.
 
 ## Tuning
 
@@ -170,7 +214,9 @@ finer-grained record:
 | `DATA_MONITOR_TOTALS` | `30` | seconds between exact total samples |
 | `DATA_MONITOR_FLUSH` | `30` | seconds between per-app database flushes — updates are batched so each flush is a single transaction |
 | `DATA_MONITOR_POLL` | `5` | nethogs `-d` refresh interval, in seconds (larger = less CPU) |
+| `DATA_MONITOR_EXCLUDE` | `docker*,veth*,virbr*,br-*,vmnet*,vboxnet*` | comma-separated globs of interfaces to leave out of the total. Set it to the empty string to count everything except loopback, or add `tun*,wg*` if you use a VPN and want only the physical side |
 | `DATA_MONITOR_DB` | `~/.local/share/data-monitor/monitor.db` | where the history lives |
+| `DATA_MONITOR_PANEL` | *(detected)* | panel to add the widget to; same as `setup-panel.sh --panel N` |
 
 Lowering them costs disk writes, not network data: the tool itself never uses the network.
 
@@ -206,7 +252,7 @@ Linux_Data_Monitor/
 │   ├── install-user.sh            ← no sudo: ~/.local/bin links + user service + panel item
 │   ├── setup-panel.sh             ← add / repair (`--remove`) the panel item
 │   └── uninstall.sh               ← cleanly reverses everything
-└── tests/                         ← 35 unit tests, no network, no writes outside temp
+└── tests/                         ← 47 unit tests, no network, no writes outside temp
 ```
 
 Run the tests any time:

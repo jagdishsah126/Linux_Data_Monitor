@@ -17,7 +17,7 @@ non-obvious things discovered along the way. See **`README.md`** for installatio
 - ✅ Reuse the good parts of the earlier `Linux Data Guardian` prototype (copy only)
 
 > ✅ **Status: implemented.** The panel shows today's total (e.g. `▲▼ 69.2 MB`) and clicking it opens the
-> per-application list. The collector user-service is enabled and 35 unit tests pass.
+> per-application list. The collector user-service is enabled and 47 unit tests pass.
 
 ---
 
@@ -33,7 +33,7 @@ non-obvious things discovered along the way. See **`README.md`** for installatio
 | Click the panel number → per-app window + 30-day chart | ✅ |
 | Collector user-service (writes history) | ✅ enabled, `~16 MB` RSS (`8 MB` PSS) + nethogs `~8 MB` |
 | Disk writes | ✅ `~60 MB/day` (measured via `/proc/<pid>/io`; batching keeps it from being gigabytes) |
-| Unit tests | ✅ 35 / 35 pass |
+| Unit tests | ✅ 47 / 47 pass |
 | Panel item | ✅ one new item; nothing else on the panel is touched |
 
 The panel value is the **exact** kernel total (`/proc/net/dev`). The tool never uses the network itself.
@@ -318,7 +318,7 @@ Linux_Data_Monitor/
     └── test_storage.py
 ```
 
-Run the tests any time with: `python3 -m unittest discover -s tests` (35 tests, no network, no writes
+Run the tests any time with: `python3 -m unittest discover -s tests` (47 tests, no network, no writes
 outside a temp directory).
 
 ### 7.2 The one-time setup commands actually used

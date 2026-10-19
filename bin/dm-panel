@@ -15,7 +15,7 @@ from xml.sax.saxutils import escape
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 
-from counter import read_totals, format_bytes  # noqa: E402
+from counter import read_interfaces, format_bytes  # noqa: E402
 from storage import Storage                     # noqa: E402
 
 
@@ -23,8 +23,7 @@ def main(argv):
     markup = "--markup" in argv
     st = Storage()
     try:
-        rx, tx = read_totals()
-        st.sample_totals(rx, tx)
+        st.sample_totals(read_interfaces())
         # No prune here: the collector prunes hourly, and a prune on every
         # panel run would mean a write transaction every 30 seconds.
     except Exception:

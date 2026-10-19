@@ -15,7 +15,7 @@ and never raises on a malformed line.
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterator, NamedTuple, Optional, Tuple
+from typing import Callable, Dict, Iterator, NamedTuple, Optional, Tuple
 
 UNKNOWN_NAMES = {"unknown", "unknown tcp", "unknown udp", "unknown ip"}
 
@@ -30,10 +30,12 @@ _CONN_TUPLE_RE = re.compile(
 class TraceEntry(NamedTuple):
     """One nethogs trace row.
 
-    ``key`` is nethogs' own label for the row (before normalisation): the
-    program path plus pid/uid, or a raw connection tuple.  It stays the same
-    for as long as that process/connection exists and is what the cumulative
-    byte counters belong to, so it - not the display name - keys the deltas.
+    ``key`` is nethogs' label for the row *exactly as printed*, including the
+    trailing ``/pid/uid`` (or, for unattributable traffic, the raw connection
+    tuple).  nethogs' cumulative counters belong to that label - two processes
+    that merely share a command line, or two ``brave`` children, are distinct
+    counters because their labels differ, so the label - never the display name
+    and never the label with the pid stripped off - is what keys the deltas.
     """
 
     app: str
@@ -76,6 +78,7 @@ def parse_trace_line(line: str) -> Optional[TraceEntry]:
         return None
 
     ident, sent_s, recv_s = parts[0], parts[1], parts[2]
+    raw = ident                      # the counter's identity, pid/uid included
     pid = uid = None
     segs = ident.rsplit("/", 2)
     if len(segs) == 3 and segs[1].isdigit() and segs[2].isdigit():
@@ -90,27 +93,33 @@ def parse_trace_line(line: str) -> Optional[TraceEntry]:
         return None
 
     return TraceEntry(
-        app=normalize_app(ident), pid=pid, uid=uid, sent=sent, recv=recv, key=ident
+        app=normalize_app(ident), pid=pid, uid=uid, sent=sent, recv=recv, key=raw
     )
 
 
 class TraceAccumulator:
     """Convert nethogs' cumulative per-process figures into per-interval deltas.
 
-    Counters are tracked per *nethogs label* (``TraceEntry.key``), never per
-    display name.  nethogs reports one cumulative counter per process, and
-    several unrelated processes routinely share a display name: every Brave
-    child is called ``brave``, and every row it cannot attribute is
-    ``Unknown`` (``unknown TCP/0/0`` and the raw connection tuples).  Merging
-    those counters makes each switch between them look like a counter reset,
-    so the full value gets re-added over and over - which is what once
-    inflated the per-application totals by orders of magnitude.
+    Counters are tracked per *nethogs label* (``TraceEntry.key``) - the label as
+    printed, pid and uid included.  nethogs reports one cumulative counter per
+    process, and several unrelated processes routinely share a display name
+    (every Brave child is called ``brave``, and every row it cannot attribute is
+    ``Unknown``).  Merging those counters makes each switch between them look
+    like a counter reset, so the full value gets re-added over and over - which
+    is what once inflated the per-application totals by orders of magnitude.
+
+    Keys are only forgotten when their process is provably gone
+    (:meth:`evict_dead`): a label without a pid, or one whose pid is still
+    alive, must keep its baseline or its whole counter would be counted again.
     """
 
     def __init__(self) -> None:
         self._last: Dict[str, Tuple[int, int]] = {}
+        self._pids: Dict[str, int] = {}
 
-    def feed(self, key: str, sent: int, recv: int) -> Tuple[int, int]:
+    def feed(
+        self, key: str, sent: int, recv: int, pid: Optional[int] = None
+    ) -> Tuple[int, int]:
         """Return ``(d_tx, d_rx)`` for ``key`` since the previous feed.
 
         ``key`` is the nethogs label (``TraceEntry.key``), not the app name.
@@ -124,10 +133,28 @@ class TraceAccumulator:
         else:
             d_sent, d_recv = sent - prev[0], recv - prev[1]
         self._last[key] = (sent, recv)
+        if pid:
+            self._pids[key] = pid
         return d_sent, d_recv
+
+    def evict_dead(self, alive: Callable[[int], bool]) -> int:
+        """Forget labels whose process no longer exists; return how many.
+
+        nethogs keeps listing a process for as long as it lives, so a label
+        carrying a pid that is gone can never be updated again - and those
+        labels are large (nethogs prints the whole command line).  Labels
+        without a pid (raw connection tuples) are deliberately kept: they
+        cannot be proven dead, and dropping a live one would re-count it.
+        """
+        dead = [key for key, pid in self._pids.items() if not alive(pid)]
+        for key in dead:
+            self._last.pop(key, None)
+            self._pids.pop(key, None)
+        return len(dead)
 
     def reset(self) -> None:
         self._last.clear()
+        self._pids.clear()
 
 
 def iter_trace_lines(stream) -> Iterator[str]:

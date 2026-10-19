@@ -27,7 +27,7 @@ from typing import Dict, List
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 
-from counter import read_totals                                # noqa: E402
+from counter import read_interfaces                               # noqa: E402
 from storage import Storage                                     # noqa: E402
 from nethogs_parse import parse_trace_line, TraceAccumulator    # noqa: E402
 
@@ -47,8 +47,7 @@ def totals_worker(st: Storage) -> None:
     last_prune = 0.0
     while not _stop.is_set():
         try:
-            rx, tx = read_totals()
-            st.sample_totals(rx, tx)
+            st.sample_totals(read_interfaces())
             if time.time() - last_prune > PRUNE_EVERY:
                 st.prune()
                 last_prune = time.time()
@@ -69,6 +68,11 @@ def run_nethogs(st: Storage) -> None:
     last_flush = time.time()
 
     def flush() -> None:
+        # Reclaim the labels of processes that have exited.  Each one is a full
+        # nethogs command line, so they are worth reclaiming; live labels (and
+        # labels with no pid at all) keep their baseline or their whole counter
+        # would be counted a second time.
+        acc.evict_dead(lambda pid: os.path.exists(f"/proc/{pid}"))
         if pending:
             st.add_app_deltas(pending)
             pending.clear()
@@ -89,7 +93,7 @@ def run_nethogs(st: Storage) -> None:
             # Key the delta on nethogs' own per-process label, never on the
             # display name: unrelated processes share a name ("brave",
             # "Unknown"), and their counters share no baseline.
-            d_tx, d_rx = acc.feed(entry.key, entry.sent, entry.recv)
+            d_tx, d_rx = acc.feed(entry.key, entry.sent, entry.recv, entry.pid)
             if d_rx or d_tx:
                 total = pending.setdefault(entry.app, [0, 0])
                 total[0] += d_rx
@@ -109,6 +113,15 @@ def run_nethogs(st: Storage) -> None:
             proc.kill()
             rc = -1
     log(f"nethogs exited (rc={rc})")
+    if rc not in (0, -9, -15):
+        # rc=1 here almost always means the binary no longer carries the
+        # packet-capture capability (a package upgrade replaces the file and
+        # the capability goes with it).  Say so out loud: the journal is the
+        # only place this is visible, because the panel keeps showing the exact
+        # total whether or not per-app data is being collected.
+        log("per-application data is unavailable until this is fixed:")
+        log(f"  getcap {nethogs}                     # expect cap_net_admin,cap_net_raw=eip")
+        log("  sudo bash scripts/install-system.sh  # re-grant it")
 
 
 def main() -> int:

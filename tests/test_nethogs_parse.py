@@ -13,13 +13,15 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(e.app, "brave")
         self.assertEqual((e.pid, e.uid), (1234, 1000))
         self.assertEqual((e.sent, e.recv), (2048, 8192))
-        self.assertEqual(e.key, "brave")
+        # the key is the label as nethogs printed it, pid and uid included:
+        # that is what the cumulative counter belongs to.
+        self.assertEqual(e.key, "brave/1234/1000")
 
     def test_full_path_name_keeps_basename(self):
         e = parse_trace_line("/usr/lib/firefox/firefox/55/1000\t1\t2")
         self.assertEqual(e.app, "firefox")
         # the *label* keeps the path; only the display name is trimmed
-        self.assertEqual(e.key, "/usr/lib/firefox/firefox")
+        self.assertEqual(e.key, "/usr/lib/firefox/firefox/55/1000")
 
     def test_unknown_is_grouped(self):
         e = parse_trace_line("unknown TCP/0/0\t1\t2")
@@ -61,7 +63,7 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(
             e.key,
             "/opt/brave.com/brave/brave --type=utility "
-            "--utility-sub-type=network.mojom.NetworkService",
+            "--utility-sub-type=network.mojom.NetworkService/4013/1000",
         )
 
     def test_connection_tuple_becomes_unknown(self):
@@ -132,6 +134,67 @@ class AccumulatorTests(unittest.TestCase):
         # 1000 + 2000 + 500 + 500.  Merging the two counters would have
         # counted 1000 + 2000 + 1500 + 1000 = 5500 instead.
         self.assertEqual(total, [4000, 1700])
+
+
+class ParseAndAccumulateTests(unittest.TestCase):
+    """End-to-end: real trace lines -> parse -> accumulate.
+
+    The accumulator tests above feed keys in by hand, and that is exactly how
+    the pid got lost without anyone noticing: the parser stripped ``/pid/uid``
+    off the key, so counters that were supposed to stay apart were merged -
+    the very bug the hand-written keys were meant to prevent.
+    """
+
+    def test_same_command_line_different_pids_stay_apart(self):
+        acc = TraceAccumulator()
+        lines = [
+            "python3 /home/u/worker.py/100/1000\t1000\t0",
+            "python3 /home/u/worker.py/200/1000\t2000\t0",
+            "python3 /home/u/worker.py/100/1000\t1500\t0",
+            "python3 /home/u/worker.py/200/1000\t2600\t0",
+        ]
+        total = 0
+        for line in lines:
+            entry = parse_trace_line(line)
+            self.assertIsNotNone(entry)
+            d_tx, _d_rx = acc.feed(entry.key, entry.sent, entry.recv, entry.pid)
+            total += d_tx
+        # 1000 + 2000 + 500 + 600.  Merging the two counters (what a key
+        # without the pid does) would have reported 1000+2000+1500+2600 = 7100.
+        self.assertEqual(total, 4100)
+
+    def test_unknown_tcp_and_connection_tuples_stay_apart(self):
+        acc = TraceAccumulator()
+        total = 0
+        for line in [
+            "unknown TCP/0/0\t0\t0",
+            "10.0.0.5:443-10.0.0.9:52133\t339\t503",
+            "unknown TCP/0/0\t0\t0",
+            "10.0.0.5:443-10.0.0.9:52133\t339\t503",
+        ]:
+            entry = parse_trace_line(line)
+            self.assertIsNotNone(entry)
+            d_tx, _d_rx = acc.feed(entry.key, entry.sent, entry.recv, entry.pid)
+            total += d_tx
+        self.assertEqual(total, 339)          # not 339 counted twice
+
+    def test_evict_dead_reclaims_finished_processes_only(self):
+        acc = TraceAccumulator()
+        acc.feed("brave/100/1000", 100, 100, pid=100)
+        acc.feed("brave/200/1000", 50, 50, pid=200)
+        acc.feed("unknown TCP/0/0", 1, 1, pid=0)
+        acc.feed("10.0.0.5:443-10.0.0.9:52133", 5, 5, pid=None)
+
+        alive = {200}.__contains__
+        self.assertEqual(acc.evict_dead(alive), 1)
+        self.assertEqual(acc.evict_dead(alive), 0)
+        self.assertNotIn("brave/100/1000", acc._last)
+        # a label that is still alive keeps its baseline, so its counter is
+        # never counted a second time
+        self.assertEqual(acc.feed("brave/200/1000", 80, 90, pid=200), (30, 40))
+        # labels with no pid cannot be proven dead, so they are kept on purpose
+        self.assertIn("unknown TCP/0/0", acc._last)
+        self.assertIn("10.0.0.5:443-10.0.0.9:52133", acc._last)
 
 
 if __name__ == "__main__":

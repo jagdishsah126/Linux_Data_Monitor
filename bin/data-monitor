@@ -18,20 +18,18 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 
-from counter import read_totals, format_bytes  # noqa: E402
+from counter import read_interfaces, format_bytes  # noqa: E402
 from storage import Storage                     # noqa: E402
 
 
 def _sample(st: Storage):
-    rx, tx = read_totals()
-    st.sample_totals(rx, tx)
+    st.sample_totals(read_interfaces())
     st.prune()
 
 
 def cmd_sample(args):
     st = Storage()
-    d_rx, d_tx = read_totals()
-    added = st.sample_totals(d_rx, d_tx)
+    added = st.sample_totals(read_interfaces())
     st.prune()
     t = st.get_today()
     print(f"sampled  +{format_bytes(added[0])} down  +{format_bytes(added[1])} up"

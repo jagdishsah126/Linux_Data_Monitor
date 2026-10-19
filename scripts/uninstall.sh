@@ -4,6 +4,9 @@
 #
 # Safe to run repeatedly.  Add --purge to also delete recorded history.
 #
+# Run it with sudo to also take the packet-capture capability off nethogs;
+# without sudo it prints the exact command instead of pretending to do it.
+#
 set -euo pipefail
 
 PURGE=0
@@ -37,6 +40,28 @@ else
     echo "History kept at ~/.local/share/data-monitor (use --purge to delete)."
 fi
 
-echo "Note: to remove the packet-capture capability:  sudo setcap -r /usr/sbin/nethogs"
-echo "Note: packages can be removed with:            sudo apt remove nethogs xfce4-genmon-plugin"
+# ---------------------------------------------------------------------------
+# the privileged change: find nethogs the same way the installer does, so the
+# path is right even when nethogs is not in /usr/sbin
+# ---------------------------------------------------------------------------
+NETHOGS_BIN=""
+for candidate in "$(command -v nethogs 2>/dev/null || true)" \
+                 /usr/sbin/nethogs /usr/bin/nethogs /usr/local/sbin/nethogs; do
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+        NETHOGS_BIN="$candidate"
+        break
+    fi
+done
+
+if [[ -z "$NETHOGS_BIN" ]]; then
+    echo "Note: nethogs not found; no capability to remove."
+elif [[ "${EUID}" -eq 0 ]]; then
+    setcap -r "$NETHOGS_BIN" 2>/dev/null || true
+    echo "Removed the packet-capture capability from $NETHOGS_BIN."
+else
+    echo "Note: nethogs still carries the packet-capture capability. Remove it with:"
+    echo "    sudo setcap -r $NETHOGS_BIN"
+fi
+
+echo "Note: packages can be removed with:  sudo apt remove nethogs xfce4-genmon-plugin"
 echo "Done."

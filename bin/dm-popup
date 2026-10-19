@@ -11,11 +11,14 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 
-from counter import read_totals, format_bytes  # noqa: E402
+from counter import read_interfaces, format_bytes  # noqa: E402
 from storage import Storage                     # noqa: E402
 
 DAYS = 30
-ALL_APPS = "All applications"
+#: Dropdown entry for the top series.  It is deliberately explicit: this
+#: series comes from the interface counters, while a named series comes from
+#: nethogs' attribution - different measurements, so they must not look alike.
+ALL_APPS = "All traffic (interface total)"
 
 
 def short_date(iso: str) -> str:
@@ -86,8 +89,7 @@ def main() -> int:
 
     st = Storage()
     try:
-        rx, tx = read_totals()
-        st.sample_totals(rx, tx)
+        st.sample_totals(read_interfaces())
     except Exception:
         pass
 
@@ -160,7 +162,7 @@ def main() -> int:
 
         total = sum(s["total_bytes"] for s in series)
         peak = max((s for s in series), key=lambda s: s["total_bytes"], default=None)
-        label = "All applications" if app is None else app
+        label = ALL_APPS if app is None else f"{app} (per-app, best-effort)"
         text = f"{label} \u2014 last {DAYS} days: {format_bytes(total)}"
         if total:
             text += f"   average {format_bytes(total // DAYS)}/day"
