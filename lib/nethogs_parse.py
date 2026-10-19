@@ -32,7 +32,11 @@ def normalize_app(name: str) -> str:
     name = (name or "").strip()
     if not name:
         return "Unknown"
-    # nethogs may print a full path; keep the basename.
+    # nethogs prints the *whole command line* for some processes (e.g. a
+    # browser's network-service child), which would otherwise end up as a
+    # 600-character blob in the panel tooltip.  Keep only the executable.
+    name = name.split(None, 1)[0]
+    # ...and it may print a full path; keep the basename.
     if "/" in name:
         name = name.rsplit("/", 1)[-1]
     if name.lower() in UNKNOWN_NAMES or name.lower().startswith("unknown"):

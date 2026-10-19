@@ -36,6 +36,26 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(normalize_app(""), "Unknown")
         self.assertEqual(normalize_app("brave"), "brave")
 
+    def test_normalize_app_strips_command_line_arguments(self):
+        # nethogs prints the whole argv for some processes; only the executable
+        # should survive, or the tooltip fills with a huge blob.
+        self.assertEqual(
+            normalize_app("/opt/brave.com/brave/brave --type=utility --lang=en-US"),
+            "brave",
+        )
+        self.assertEqual(
+            normalize_app("python3 /home/user/script.py --flag"), "python3"
+        )
+
+    def test_full_command_line_becomes_the_executable(self):
+        app, pid, uid, sent, recv = parse_trace_line(
+            "/opt/brave.com/brave/brave --type=utility "
+            "--utility-sub-type=network.mojom.NetworkService/4013/1000\t4886\t31798"
+        )
+        self.assertEqual(app, "brave")
+        self.assertEqual((pid, uid), (4013, 1000))
+        self.assertEqual((sent, recv), (4886, 31798))
+
     def test_connection_tuple_becomes_unknown(self):
         app, pid, uid, sent, recv = parse_trace_line(
             "10.0.0.5:443-10.0.0.9:52133\t339\t503"
