@@ -17,7 +17,7 @@ non-obvious things discovered along the way. See **`README.md`** for installatio
 - ✅ Reuse the good parts of the earlier `Linux Data Guardian` prototype (copy only)
 
 > ✅ **Status: implemented.** The panel shows today's total (e.g. `▲▼ 69.2 MB`) and clicking it opens the
-> per-application list. The collector user-service is enabled and 28 unit tests pass.
+> per-application list. The collector user-service is enabled and 30 unit tests pass.
 
 ---
 
@@ -316,7 +316,7 @@ Linux_Data_Monitor/
     └── test_storage.py
 ```
 
-Run the tests any time with: `python3 -m unittest discover -s tests` (28 tests, no network, no writes
+Run the tests any time with: `python3 -m unittest discover -s tests` (30 tests, no network, no writes
 outside a temp directory).
 
 ### 7.2 The one-time setup commands actually used
@@ -336,7 +336,9 @@ No root daemon, no firewall, no changes to network configuration.
 - ⚠️ **Per-app** is best-effort:
   - Traffic from *other users / system services* appears as **"Unknown/system"** in the user-service setup (still counted in the total).
   - Very short-lived connections may be attributed imperfectly.
-  - It counts bytes per process **name**, so several processes of one app (e.g., many Brave processes) are grouped sensibly, but a process that restarts keeps the same name → grouped. Good.
+  - Bytes are tracked per **process** — nethogs' own label (program path + `pid`/`uid`, or a raw
+    connection tuple) — so two unrelated counters are never merged into one running total. Only the
+    *display* name is grouped, so several Brave processes still show up as a single `brave` row, correctly.
   - Per-app rows **will not sum exactly** to the total (that's expected; we show the difference as "Unknown" rather than hiding it).
 - ⚠️ **First day only:** today's total starts counting from the moment the tool was first installed, so it
   may understate the first few hours of day one. Every following day is complete (and a mid-day reboot is

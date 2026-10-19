@@ -67,12 +67,14 @@ def run_nethogs(st: Storage) -> None:
         for line in proc.stdout:
             if _stop.is_set():
                 break
-            parsed = parse_trace_line(line)
-            if not parsed:
+            entry = parse_trace_line(line)
+            if entry is None:
                 continue
-            app, _pid, _uid, sent, recv = parsed
-            d_tx, d_rx = acc.feed(app, sent, recv)
-            st.add_app_delta(app, d_rx, d_tx)
+            # Key the delta on nethogs' own per-process label, never on the
+            # display name: unrelated processes share a name ("brave",
+            # "Unknown"), and their counters share no baseline.
+            d_tx, d_rx = acc.feed(entry.key, entry.sent, entry.recv)
+            st.add_app_delta(entry.app, d_rx, d_tx)
     finally:
         try:
             proc.terminate()

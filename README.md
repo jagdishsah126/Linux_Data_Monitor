@@ -188,7 +188,7 @@ Linux_Data_Monitor/
 │   ├── install-user.sh            ← no sudo: ~/.local/bin links + user service + panel item
 │   ├── setup-panel.sh             ← add / repair (`--remove`) the panel item
 │   └── uninstall.sh               ← cleanly reverses everything
-└── tests/                         ← 28 unit tests, no network, no writes outside temp
+└── tests/                         ← 30 unit tests, no network, no writes outside temp
 ```
 
 Run the tests any time:

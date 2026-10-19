@@ -15,7 +15,7 @@ and never raises on a malformed line.
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterator, Optional, Tuple
+from typing import Dict, Iterator, NamedTuple, Optional, Tuple
 
 UNKNOWN_NAMES = {"unknown", "unknown tcp", "unknown udp", "unknown ip"}
 
@@ -25,6 +25,23 @@ UNKNOWN_NAMES = {"unknown", "unknown tcp", "unknown udp", "unknown ip"}
 _CONN_TUPLE_RE = re.compile(
     r"^[0-9A-Fa-f:.]{3,}:\d{1,5}-[0-9A-Fa-f:.]{3,}:\d{1,5}$"
 )
+
+
+class TraceEntry(NamedTuple):
+    """One nethogs trace row.
+
+    ``key`` is nethogs' own label for the row (before normalisation): the
+    program path plus pid/uid, or a raw connection tuple.  It stays the same
+    for as long as that process/connection exists and is what the cumulative
+    byte counters belong to, so it - not the display name - keys the deltas.
+    """
+
+    app: str
+    pid: Optional[int]
+    uid: Optional[int]
+    sent: int
+    recv: int
+    key: str
 
 
 def normalize_app(name: str) -> str:
@@ -46,8 +63,8 @@ def normalize_app(name: str) -> str:
     return name
 
 
-def parse_trace_line(line: str) -> Optional[Tuple[str, Optional[int], Optional[int], int, int]]:
-    """Parse one trace line → ``(app, pid, uid, sent_bytes, recv_bytes)`` or None."""
+def parse_trace_line(line: str) -> Optional[TraceEntry]:
+    """Parse one trace line → :class:`TraceEntry`, or ``None`` if it is not a row."""
     line = line.rstrip("\r\n")
     if not line or line.startswith("Refreshing") or line.startswith("adding local"):
         return None
@@ -72,27 +89,41 @@ def parse_trace_line(line: str) -> Optional[Tuple[str, Optional[int], Optional[i
     except ValueError:
         return None
 
-    return normalize_app(ident), pid, uid, sent, recv
+    return TraceEntry(
+        app=normalize_app(ident), pid=pid, uid=uid, sent=sent, recv=recv, key=ident
+    )
 
 
 class TraceAccumulator:
-    """Convert cumulative per-app figures into per-interval deltas."""
+    """Convert nethogs' cumulative per-process figures into per-interval deltas.
+
+    Counters are tracked per *nethogs label* (``TraceEntry.key``), never per
+    display name.  nethogs reports one cumulative counter per process, and
+    several unrelated processes routinely share a display name: every Brave
+    child is called ``brave``, and every row it cannot attribute is
+    ``Unknown`` (``unknown TCP/0/0`` and the raw connection tuples).  Merging
+    those counters makes each switch between them look like a counter reset,
+    so the full value gets re-added over and over - which is what once
+    inflated the per-application totals by orders of magnitude.
+    """
 
     def __init__(self) -> None:
         self._last: Dict[str, Tuple[int, int]] = {}
 
-    def feed(self, app: str, sent: int, recv: int) -> Tuple[int, int]:
-        """Return ``(d_tx, d_rx)`` for ``app`` since the previous feed.
+    def feed(self, key: str, sent: int, recv: int) -> Tuple[int, int]:
+        """Return ``(d_tx, d_rx)`` for ``key`` since the previous feed.
+
+        ``key`` is the nethogs label (``TraceEntry.key``), not the app name.
 
         Detects decreases (nethogs restart, counter reset) and treats the new
         value as the delta so nothing is lost or double-counted.
         """
-        prev = self._last.get(app)
+        prev = self._last.get(key)
         if prev is None or sent < prev[0] or recv < prev[1]:
             d_sent, d_recv = sent, recv
         else:
             d_sent, d_recv = sent - prev[0], recv - prev[1]
-        self._last[app] = (sent, recv)
+        self._last[key] = (sent, recv)
         return d_sent, d_recv
 
     def reset(self) -> None:
