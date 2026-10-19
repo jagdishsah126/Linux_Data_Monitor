@@ -52,7 +52,22 @@ set_ids() {                      # replace the plugin-ids array with "$@"
     xq -p "$IDS_PATH" "${args[@]}"
 }
 
-reload_panel() { xfce4-panel -r >/dev/null 2>&1 || true; }
+reload_panel() {
+    # Ask the panel to restart so it picks up the new plugin list.
+    xfce4-panel -r >/dev/null 2>&1 || true
+
+    # SAFETY: "xfce4-panel -r" occasionally leaves the panel stopped.  If that
+    # happens and XFCE then saves the session, the saved session contains NO
+    # panel -- and from then on the taskbar never comes back after login/reboot.
+    # So: wait for the panel to return, and start it ourselves if it does not.
+    local i
+    for i in $(seq 1 20); do
+        pgrep -x xfce4-panel >/dev/null 2>&1 && return 0
+        sleep 0.5
+    done
+    echo "!! The panel did not come back after restarting; starting it now." >&2
+    setsid xfce4-panel >/dev/null 2>&1 < /dev/null &
+}
 
 # ---------------------------------------------------------------------------
 # remove
