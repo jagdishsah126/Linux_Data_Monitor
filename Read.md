@@ -17,7 +17,7 @@ non-obvious things discovered along the way. See **`README.md`** for installatio
 - ✅ Reuse the good parts of the earlier `Linux Data Guardian` prototype (copy only)
 
 > ✅ **Status: implemented.** The panel shows today's total (e.g. `▲▼ 69.2 MB`) and clicking it opens the
-> per-application list. The collector user-service is enabled and 26 unit tests pass.
+> per-application list. The collector user-service is enabled and 28 unit tests pass.
 
 ---
 
@@ -316,7 +316,7 @@ Linux_Data_Monitor/
     └── test_storage.py
 ```
 
-Run the tests any time with: `python3 -m unittest discover -s tests` (26 tests, no network, no writes
+Run the tests any time with: `python3 -m unittest discover -s tests` (28 tests, no network, no writes
 outside a temp directory).
 
 ### 7.2 The one-time setup commands actually used
