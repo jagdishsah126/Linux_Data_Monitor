@@ -24,7 +24,9 @@ for tool in data-monitor dm-panel dm-collector dm-popup; do
 done
 
 # remove the panel item, if present
-if [[ -x "$(dirname "$0")/setup-panel.sh" ]]; then
+# (test -f, not -x: the script is always invoked through bash, and the execute
+#  bit may not survive a checkout on some filesystems)
+if [[ -f "$(dirname "$0")/setup-panel.sh" ]]; then
     bash "$(dirname "$0")/setup-panel.sh" --remove || true
 fi
 

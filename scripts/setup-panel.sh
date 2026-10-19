@@ -61,8 +61,10 @@ if [[ "${1:-}" == "--remove" ]]; then
     if id="$(genmon_id)"; then
         set_ids $(ids | grep -vx "$id")
         xq -p "/plugins/plugin-${id}" -r 2>/dev/null || true
-        rm -f "$RC_DIR/genmon-${id}.rc"
         reload_panel
+        # NOTE: the panel rewrites plugin .rc files while shutting down, so the
+        # file must be deleted *after* the reload, not before.
+        rm -f "$RC_DIR/genmon-${id}.rc"
         echo "Removed the panel item (plugin id ${id})."
     else
         echo "No genmon panel item found; nothing to remove."
