@@ -191,7 +191,10 @@ TOTAL (all)                  total  98.1 MB   [per-app is best-effort]
 - ⚠️ **Per-app is best-effort**, and the `Unknown` row is exactly what `nethogs` could **not**
   attribute (other users, system services, connections too short-lived to catch). It is not a
   calculated "total minus the named applications". Per-app rows therefore never sum exactly to the
-  total, and they must never exceed it.
+  total. Expect them to come in **a little under** it over a full day; on a short window they can
+  also read slightly over, because the two series are sampled by two independent 30-second cycles
+  that are not phase-aligned. A gap of tens of percent over minutes is normal; a *multiple* is not,
+  and would be a bug.
 - ⚠️ **Per-app figures only exist from the moment the capability is granted** — there is no history
   to back-fill.
 - ⚠️ **The first day is partial.** Today's total starts counting when the tool is first installed, so
