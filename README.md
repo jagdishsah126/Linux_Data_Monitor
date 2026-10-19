@@ -1,6 +1,6 @@
 # Data Monitor
 
-**Today's network data usage, right in your XFCE panel — with a click-to-open per-application breakdown.**
+**Today's network data usage, right in your XFCE panel — click for a per-application breakdown and a 30-day chart.**
 
 A tiny, *measurement-only* data tracker. It does not block, throttle, shape or enforce anything: it
 just tells you the truth, cheaply.
@@ -39,7 +39,8 @@ silently. This project deliberately does the opposite and **only measures**:
 
 - **Panel indicator** showing today's total (download + upload), refreshed every 30 s.
 - **Hover tooltip** with today's split and the top applications.
-- **Click** to open a per-application window for today.
+- **Click** for a window with two tabs: today's per-application list, and a 30-day line graph you can
+  filter to a single application.
 - **30-day history** in a single SQLite file, pruned automatically.
 - **Command line**: `data-monitor today`, `data-monitor apps`, `data-monitor history`.
 - **Reversible**: a one-line uninstall and a `setcap -r` puts everything back.
@@ -101,7 +102,7 @@ panel layout is not reset or reconfigured — nothing else on the panel is touch
 | --- | --- |
 | Panel | `▲▼ 98.1 MB` — today's download + upload. |
 | Hover | Quick breakdown: today's split and the top applications. |
-| Click | The full per-application window for today. |
+| Click | Today's per-application list, plus a 30-day chart tab. |
 | Terminal | `data-monitor today` · `data-monitor apps` · `data-monitor history` |
 
 ```
@@ -188,7 +189,7 @@ Linux_Data_Monitor/
 │   ├── install-user.sh            ← no sudo: ~/.local/bin links + user service + panel item
 │   ├── setup-panel.sh             ← add / repair (`--remove`) the panel item
 │   └── uninstall.sh               ← cleanly reverses everything
-└── tests/                         ← 30 unit tests, no network, no writes outside temp
+└── tests/                         ← 33 unit tests, no network, no writes outside temp
 ```
 
 Run the tests any time:

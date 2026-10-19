@@ -83,6 +83,37 @@ class StorageTests(unittest.TestCase):
         rows = self.st.get_history(days=30)
         self.assertEqual(len(rows), 3)
 
+    def test_series_zero_fills_missing_days(self):
+        day = date.today() - timedelta(days=3)
+        self.st.sample_totals(0, 0, when=day)            # establish baseline
+        self.st.sample_totals(1000, 400, when=day)       # +1000 down, +400 up
+
+        series = self.st.get_series(days=7)
+        self.assertEqual(len(series), 7)                 # one point per day
+        self.assertEqual(series[-1]["date"], date.today().isoformat())
+        self.assertEqual(series[0]["total_bytes"], 0)    # quiet day is still a point
+        entry = next(s for s in series if s["date"] == day.isoformat())
+        self.assertEqual((entry["rx_bytes"], entry["tx_bytes"]), (1000, 400))
+        self.assertEqual(entry["total_bytes"], 1400)
+
+    def test_series_can_track_one_app(self):
+        self.st.add_app_delta("brave", 500, 100)
+        self.st.add_app_delta("apt", 10, 5)
+        self.st.add_app_delta("brave", 100, 50, when=date.today() - timedelta(days=2))
+
+        series = self.st.get_series(days=7, app="brave")
+        self.assertEqual(len(series), 7)
+        self.assertEqual(series[-1]["total_bytes"], 600)
+        self.assertEqual(series[-3]["total_bytes"], 150)   # 100 + 50, two days ago
+        # a quiet day for that app is zero, not missing
+        self.assertEqual(series[0]["total_bytes"], 0)
+
+    def test_app_names_are_recent_and_sorted(self):
+        self.st.add_app_delta("brave", 1, 1)
+        self.st.add_app_delta("apt", 1, 1)
+        self.st.add_app_delta("ancient", 1, 1, when=date.today() - timedelta(days=60))
+        self.assertEqual(self.st.get_app_names(days=30), ["apt", "brave"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -216,6 +216,55 @@ class Storage:
             conn.close()
         return [dict(r) for r in rows]
 
+    def get_series(
+        self, days: int = KEEP_DAYS, app: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """One entry per day for the last ``days`` days, oldest first.
+
+        ``app=None`` uses the exact daily totals; otherwise the per-application
+        table.  Missing days are zero-filled so a chart always has ``days``
+        evenly spaced points.
+        """
+        first = date.today() - timedelta(days=days - 1)
+        cutoff = first.isoformat()
+        if app is None:
+            sql = "SELECT date, rx_bytes, tx_bytes FROM daily WHERE date >= ?"
+            params: Tuple[Any, ...] = (cutoff,)
+        else:
+            sql = ("SELECT date, rx_bytes, tx_bytes FROM app_daily "
+                   "WHERE date >= ? AND app = ?")
+            params = (cutoff, app)
+
+        conn = self._connect()
+        try:
+            found = {r["date"]: r for r in conn.execute(sql, params)}
+        finally:
+            conn.close()
+
+        series: List[Dict[str, Any]] = []
+        for offset in range(days):
+            day = (first + timedelta(days=offset)).isoformat()
+            row = found.get(day)
+            rx = int(row["rx_bytes"]) if row else 0
+            tx = int(row["tx_bytes"]) if row else 0
+            series.append(
+                {"date": day, "rx_bytes": rx, "tx_bytes": tx, "total_bytes": rx + tx}
+            )
+        return series
+
+    def get_app_names(self, days: int = KEEP_DAYS) -> List[str]:
+        """Application names with per-app data in the last ``days`` days."""
+        cutoff = (date.today() - timedelta(days=days - 1)).isoformat()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT app FROM app_daily WHERE date >= ? ORDER BY app",
+                (cutoff,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [r["app"] for r in rows]
+
     # ------------------------------------------------------------ pruning ---
     def prune(self, keep_days: int = KEEP_DAYS) -> int:
         """Delete records older than ``keep_days`` (keeps today + previous N-1)."""

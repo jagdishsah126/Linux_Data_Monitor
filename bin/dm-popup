@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Small window listing today's per-application usage.
+"""Data Monitor window: today's per-application usage, and a 30-day chart.
 
-Uses only tkinter (already part of Python) — no heavy charting framework.
+Uses only tkinter (already part of Python) — no heavy charting framework, no
+downloads.  The chart is a plain Canvas line graph, one point per day.
 """
 from __future__ import annotations
 
@@ -13,8 +14,76 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..
 from counter import read_totals, format_bytes  # noqa: E402
 from storage import Storage                     # noqa: E402
 
+DAYS = 30
+ALL_APPS = "All applications"
+
+
+def short_date(iso: str) -> str:
+    """``2026-10-19`` → ``10-19``."""
+    return iso[5:]
+
+
+def draw_chart(canvas, series, colour="#2b6cb0") -> None:
+    """Draw ``series`` (one dict per day) as a line graph on ``canvas``."""
+    canvas.delete("all")
+    width = canvas.winfo_width()
+    height = canvas.winfo_height()
+    # Before the window is mapped (and on the very first paint) the canvas
+    # reports 1x1; fall back to the configured size rather than drawing junk.
+    if width < 50:
+        width = int(canvas["width"]) or 600
+    if height < 50:
+        height = int(canvas["height"]) or 260
+    left, right, top, bottom = 56, 14, 14, 26
+    x0, x1 = left, width - right
+    y0, y1 = height - bottom, top          # y0 = baseline, y1 = top of plot
+
+    peak = max((s["total_bytes"] for s in series), default=0)
+    if not series or peak <= 0:
+        canvas.create_text(
+            width // 2, height // 2, fill="#888",
+            text="No history yet \u2014 it builds up one day at a time.",
+        )
+        return
+
+    # Horizontal grid + value labels (0 → peak).
+    for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
+        y = y0 - frac * (y0 - y1)
+        canvas.create_line(x0, y, x1, y, fill="#e6e6e6")
+        canvas.create_text(
+            x0 - 6, y, anchor="e", fill="#777", font=("", 7),
+            text=format_bytes(int(peak * frac)),
+        )
+
+    span = max(1, len(series) - 1)
+    step = (x1 - x0) / span
+
+    def point(index: int, value: int) -> tuple[float, float]:
+        return x0 + index * step, y0 - (value / peak) * (y0 - y1)
+
+    points = [point(i, s["total_bytes"]) for i, s in enumerate(series)]
+    if len(points) > 1:
+        canvas.create_line(
+            [c for xy in points for c in xy], fill=colour, width=2, joinstyle="round"
+        )
+    # Every day gets a small dot; today (last point) gets a bigger one.
+    for i, (px, py) in enumerate(points):
+        r = 3 if i == len(points) - 1 else 1.5
+        canvas.create_oval(px - r, py - r, px + r, py + r, fill=colour, outline="")
+
+    # Date labels: weekly, plus the last day so "today" is always readable.
+    for i, s in enumerate(series):
+        if i % 7 == 0 or i == len(series) - 1:
+            px, _ = points[i]
+            canvas.create_text(
+                px, y0 + 12, text=short_date(s["date"]), fill="#777", font=("", 7)
+            )
+
 
 def main() -> int:
+    import tkinter as tk
+    from tkinter import ttk
+
     st = Storage()
     try:
         rx, tx = read_totals()
@@ -25,31 +94,31 @@ def main() -> int:
     today = st.get_today()
     apps = st.get_today_apps()
 
-    import tkinter as tk
-    from tkinter import ttk
-
     root = tk.Tk()
-    root.title("Data Monitor \u2014 today")
-    root.minsize(360, 260)
+    root.title("Data Monitor")
+    root.minsize(520, 420)
 
-    head = ttk.Frame(root, padding=(12, 10, 12, 6))
-    head.pack(fill="x")
-    ttk.Label(head, text="Today's data", font=("", 12, "bold")).pack(anchor="w")
+    notebook = ttk.Notebook(root)
+    notebook.pack(fill="both", expand=True, padx=8, pady=8)
+
+    # ------------------------------------------------------------ today ---
+    tab_today = ttk.Frame(notebook, padding=(10, 10, 10, 10))
+    notebook.add(tab_today, text="Today")
+
     ttk.Label(
-        head,
+        tab_today,
         text=f"Total {format_bytes(today['total_bytes'])}   "
-             f"\u2193 {format_bytes(today['rx_bytes'])}   \u2191 {format_bytes(today['tx_bytes'])}",
-    ).pack(anchor="w")
-
-    body = ttk.Frame(root, padding=(12, 0, 12, 12))
-    body.pack(fill="both", expand=True)
+             f"\u2193 {format_bytes(today['rx_bytes'])}   "
+             f"\u2191 {format_bytes(today['tx_bytes'])}",
+        font=("", 11, "bold"),
+    ).pack(anchor="w", pady=(0, 8))
 
     cols = ("app", "down", "up", "total")
-    tree = ttk.Treeview(body, columns=cols, show="headings", height=10)
-    for c, t, w in (("app", "Application", 140), ("down", "Down", 90),
-                    ("up", "Up", 90), ("total", "Total", 90)):
-        tree.heading(c, text=t)
-        tree.column(c, width=w, anchor="w" if c == "app" else "e")
+    tree = ttk.Treeview(tab_today, columns=cols, show="headings", height=10)
+    for c, title, width in (("app", "Application", 150), ("down", "Down", 90),
+                            ("up", "Up", 90), ("total", "Total", 90)):
+        tree.heading(c, text=title)
+        tree.column(c, width=width, anchor="w" if c == "app" else "e")
     for a in apps:
         tree.insert("", "end", values=(
             a["app"], format_bytes(a["rx_bytes"]),
@@ -57,14 +126,51 @@ def main() -> int:
         ))
     tree.pack(fill="both", expand=True)
 
-    if not apps:
-        ttk.Label(body, text="No per-application data yet.").pack(anchor="w", pady=6)
-    else:
-        ttk.Label(
-            body,
-            text="Per-application figures are best-effort; the total above is exact.",
-            foreground="#666",
-        ).pack(anchor="w", pady=(6, 0))
+    note = ("Per-application figures are best-effort; the total above is exact."
+            if apps else "No per-application data yet.")
+    ttk.Label(tab_today, text=note, foreground="#666").pack(anchor="w", pady=(6, 0))
+
+    # ------------------------------------------------------------ chart ---
+    tab_chart = ttk.Frame(notebook, padding=(10, 10, 10, 10))
+    notebook.add(tab_chart, text="Chart")
+
+    picker = ttk.Frame(tab_chart)
+    picker.pack(fill="x")
+    ttk.Label(picker, text="Show:").pack(side="left")
+    combo = ttk.Combobox(
+        picker, state="readonly", width=26, values=[ALL_APPS] + st.get_app_names(DAYS)
+    )
+    combo.set(ALL_APPS)
+    combo.pack(side="left", padx=(6, 0))
+
+    summary = ttk.Label(tab_chart, text="", foreground="#666")
+    summary.pack(anchor="w", pady=(6, 6))
+
+    canvas = tk.Canvas(
+        tab_chart, background="white", height=240,
+        highlightthickness=1, highlightbackground="#ccc",
+    )
+    canvas.pack(fill="both", expand=True)
+
+    def redraw(*_args) -> None:
+        choice = combo.get()
+        app = None if choice == ALL_APPS else choice
+        series = st.get_series(DAYS, app)
+        draw_chart(canvas, series)
+
+        total = sum(s["total_bytes"] for s in series)
+        peak = max((s for s in series), key=lambda s: s["total_bytes"], default=None)
+        label = "All applications" if app is None else app
+        text = f"{label} \u2014 last {DAYS} days: {format_bytes(total)}"
+        if total:
+            text += f"   average {format_bytes(total // DAYS)}/day"
+        if peak and peak["total_bytes"]:
+            text += f"   peak {format_bytes(peak['total_bytes'])} on {short_date(peak['date'])}"
+        summary.config(text=text)
+
+    combo.bind("<<ComboboxSelected>>", redraw)
+    canvas.bind("<Configure>", redraw)
+    redraw()
 
     root.mainloop()
     return 0

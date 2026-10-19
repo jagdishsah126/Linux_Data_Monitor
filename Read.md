@@ -17,7 +17,7 @@ non-obvious things discovered along the way. See **`README.md`** for installatio
 - ✅ Reuse the good parts of the earlier `Linux Data Guardian` prototype (copy only)
 
 > ✅ **Status: implemented.** The panel shows today's total (e.g. `▲▼ 69.2 MB`) and clicking it opens the
-> per-application list. The collector user-service is enabled and 30 unit tests pass.
+> per-application list. The collector user-service is enabled and 33 unit tests pass.
 
 ---
 
@@ -136,7 +136,7 @@ quotas, window tracking, a privileged helper, dual accounting, 30-day history, g
 | --- | --- |
 | Treats per-app as routine | It needs packet capture (privilege) — a real sub-project, not a checkbox. |
 | Proposes a root helper | Root is what broke the old project. We use a **one-time capability flag** instead, with **no** root daemon. |
-| Makes 30-day history + graphs core | Nice-to-have; add later. Bundling them is how projects balloon. |
+| Makes 30-day history + graphs core | Nice-to-have; add later. Bundling them is how projects balloon. *(Delivered later, and deliberately tiny: history is one table, the chart is ~60 lines of plain `tkinter` `Canvas` — no `matplotlib`.)* |
 | Suggests evaluating nethogs/vnstat | vnstat gives only per-interface totals (no per-app). nethogs is the relevant one — and it is tiny. |
 | Assumes a permanent daemon | Totals need none. Only per-app needs a small collector, and it can be a **user** service. |
 
@@ -240,7 +240,8 @@ nethogs (packet capture) ──► tiny Python parser ──► per-app daily to
 ## 5. Panel & popup
 
 - **In the panel:** `genmon` runs our script every 60 s and prints e.g. `▲▼ 13.6 MB`.
-- **On click:** genmon runs a command that opens a small window listing per-app usage (name, ↓, ↑, total) plus today's combined up/down.
+- **On click:** genmon runs a command that opens a small window with two tabs — **Today** (per-app
+  usage: name, ↓, ↑, total) and **Chart** (a 30-day line graph you can filter to a single app).
 - Your existing panel is **not reset or reconfigured** — we only *add* one item.
 
 **Mock-up:**
@@ -286,7 +287,7 @@ The decision was to **build the total and per-app parts together**. Internally t
 | **W1** | Today's total in the panel | 🟢 Easy | 52 KB | Exact; from `/proc/net/dev`. |
 | **W2** | Per-app collector (nethogs → SQLite) | 🟡 Medium | 34 KB + one-time `setcap` | The accurate, harder part. |
 | **W3** | Click-to-open per-app popup | 🟢 Easy | 0 | Uses `tkinter`/GTK. |
-| **W4** *(optional, later)* | 30-day history list + simple graph | 🟡 Medium | 0 | `sqlite3` + `tkinter`; avoid heavy `matplotlib`. |
+| **W4** ✅ | 30-day history list + simple line graph (filter by app) | 🟢 Easy | 0 | Plain `tkinter` `Canvas`; no `matplotlib`. |
 
 ### 7.1 What was created (all inside `Linux_Data_Monitor/`)
 
@@ -316,7 +317,7 @@ Linux_Data_Monitor/
     └── test_storage.py
 ```
 
-Run the tests any time with: `python3 -m unittest discover -s tests` (30 tests, no network, no writes
+Run the tests any time with: `python3 -m unittest discover -s tests` (33 tests, no network, no writes
 outside a temp directory).
 
 ### 7.2 The one-time setup commands actually used
