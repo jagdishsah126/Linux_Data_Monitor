@@ -220,3 +220,9 @@ so the item can be added or repaired at any time. More detail in [Read.md](Read.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Contact
+
+Questions, bug reports, suggestions, advice — or just some talk:
+**[jagdishsah.com.np](https://jagdishsah.com.np)**
+
