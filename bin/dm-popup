@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Small window listing today's per-application usage.
+
+Uses only tkinter (already part of Python) — no heavy charting framework.
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+
+from counter import read_totals, format_bytes  # noqa: E402
+from storage import Storage                     # noqa: E402
+
+
+def main() -> int:
+    st = Storage()
+    try:
+        rx, tx = read_totals()
+        st.sample_totals(rx, tx)
+    except Exception:
+        pass
+
+    today = st.get_today()
+    apps = st.get_today_apps()
+
+    import tkinter as tk
+    from tkinter import ttk
+
+    root = tk.Tk()
+    root.title("Data Monitor \u2014 today")
+    root.minsize(360, 260)
+
+    head = ttk.Frame(root, padding=(12, 10, 12, 6))
+    head.pack(fill="x")
+    ttk.Label(head, text="Today's data", font=("", 12, "bold")).pack(anchor="w")
+    ttk.Label(
+        head,
+        text=f"Total {format_bytes(today['total_bytes'])}   "
+             f"\u2193 {format_bytes(today['rx_bytes'])}   \u2191 {format_bytes(today['tx_bytes'])}",
+    ).pack(anchor="w")
+
+    body = ttk.Frame(root, padding=(12, 0, 12, 12))
+    body.pack(fill="both", expand=True)
+
+    cols = ("app", "down", "up", "total")
+    tree = ttk.Treeview(body, columns=cols, show="headings", height=10)
+    for c, t, w in (("app", "Application", 140), ("down", "Down", 90),
+                    ("up", "Up", 90), ("total", "Total", 90)):
+        tree.heading(c, text=t)
+        tree.column(c, width=w, anchor="w" if c == "app" else "e")
+    for a in apps:
+        tree.insert("", "end", values=(
+            a["app"], format_bytes(a["rx_bytes"]),
+            format_bytes(a["tx_bytes"]), format_bytes(a["total_bytes"]),
+        ))
+    tree.pack(fill="both", expand=True)
+
+    if not apps:
+        ttk.Label(body, text="No per-application data yet.").pack(anchor="w", pady=6)
+    else:
+        ttk.Label(
+            body,
+            text="Per-application figures are best-effort; the total above is exact.",
+            foreground="#666",
+        ).pack(anchor="w", pady=(6, 0))
+
+    root.mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

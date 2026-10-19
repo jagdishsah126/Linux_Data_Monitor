@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Data Monitor collector: exact totals + per-application usage.
+
+Runs as a *user* systemd service.  No root, no firewall, no network access.
+
+  * totals  : sampled from /proc/net/dev every POLL seconds (always works);
+  * per-app : parsed from ``nethogs -t`` when nethogs is installed and the
+              binary has been granted packet-capture capability.
+
+If nethogs is missing or fails, totals keep working on their own.
+"""
+from __future__ import annotations
+
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+
+from counter import read_totals                                # noqa: E402
+from storage import Storage                                     # noqa: E402
+from nethogs_parse import parse_trace_line, TraceAccumulator    # noqa: E402
+
+POLL = float(os.environ.get("DATA_MONITOR_POLL", "5"))
+PRUNE_EVERY = 3600.0
+
+_stop = threading.Event()
+
+
+def log(msg: str) -> None:
+    print(f"[data-monitor] {msg}", file=sys.stderr, flush=True)
+
+
+def totals_worker(st: Storage) -> None:
+    last_prune = 0.0
+    while not _stop.is_set():
+        try:
+            rx, tx = read_totals()
+            st.sample_totals(rx, tx)
+            if time.time() - last_prune > PRUNE_EVERY:
+                st.prune()
+                last_prune = time.time()
+        except Exception as exc:  # keep the loop alive no matter what
+            log(f"totals error: {exc}")
+        _stop.wait(POLL)
+
+
+def run_nethogs(st: Storage) -> None:
+    nethogs = shutil.which("nethogs")
+    if not nethogs:
+        log("nethogs not installed yet - totals only")
+        _stop.wait(60)
+        return
+
+    acc = TraceAccumulator()
+    cmd = [nethogs, "-t", "-d", str(max(1, int(POLL))), "-v", "2"]
+    log("starting: " + " ".join(cmd))
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1
+    )
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if _stop.is_set():
+                break
+            parsed = parse_trace_line(line)
+            if not parsed:
+                continue
+            app, _pid, _uid, sent, recv = parsed
+            d_tx, d_rx = acc.feed(app, sent, recv)
+            st.add_app_delta(app, d_rx, d_tx)
+    finally:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            rc = proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            rc = -1
+    log(f"nethogs exited (rc={rc})")
+
+
+def main() -> int:
+    st = Storage()
+    threading.Thread(target=totals_worker, args=(st,), daemon=True).start()
+
+    def handle(_signum, _frame):
+        _stop.set()
+
+    signal.signal(signal.SIGTERM, handle)
+    signal.signal(signal.SIGINT, handle)
+
+    while not _stop.is_set():
+        started = time.time()
+        try:
+            run_nethogs(st)
+        except Exception as exc:
+            log(f"collector error: {exc}")
+        ran = time.time() - started
+        if not _stop.is_set():
+            # If nethogs died straight away (e.g. capability not granted yet),
+            # back off so we never spam; otherwise just restart promptly.
+            _stop.wait(60 if ran < 5 else 5)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,18 @@
+[Unit]
+Description=Data Monitor collector (exact totals + per-application usage)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=@PYTHON@ "@PROJECT@/bin/dm-collector"
+Restart=on-failure
+RestartSec=5
+# stay polite on a low-resource laptop
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=128M
+CPUWeight=20
+
+[Install]
+WantedBy=default.target

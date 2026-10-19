@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Data Monitor — command line interface.
+
+Examples:
+    data-monitor today      # today's total (human readable)
+    data-monitor panel      # one short line for the XFCE panel
+    data-monitor apps       # today's per-application usage
+    data-monitor history    # last 30 days
+    data-monitor sample     # take one totals sample now
+    data-monitor collect    # run the collector in the foreground
+    data-monitor popup      # open the per-application window
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+
+from counter import read_totals, format_bytes  # noqa: E402
+from storage import Storage                     # noqa: E402
+
+
+def _sample(st: Storage):
+    rx, tx = read_totals()
+    st.sample_totals(rx, tx)
+    st.prune()
+
+
+def cmd_sample(args):
+    st = Storage()
+    d_rx, d_tx = read_totals()
+    added = st.sample_totals(d_rx, d_tx)
+    st.prune()
+    t = st.get_today()
+    print(f"sampled  +{format_bytes(added[0])} down  +{format_bytes(added[1])} up"
+          f"  |  today {format_bytes(t['total_bytes'])}")
+    return 0
+
+
+def cmd_today(args):
+    st = Storage()
+    _sample(st)
+    t = st.get_today()
+    if args.json:
+        import json
+        print(json.dumps(t))
+        return 0
+    print(f"Today: {format_bytes(t['total_bytes'])} total "
+          f"(down {format_bytes(t['rx_bytes'])}, up {format_bytes(t['tx_bytes'])})")
+    return 0
+
+
+def cmd_panel(args):
+    st = Storage()
+    _sample(st)
+    t = st.get_today()
+    print(f"\u25b2\u25bc {format_bytes(t['total_bytes'])}")
+    return 0
+
+
+def cmd_apps(args):
+    st = Storage()
+    _sample(st)
+    apps = st.get_today_apps(limit=args.limit or None)
+    t = st.get_today()
+    if not apps:
+        print("No per-application data yet.")
+        print("(Start the collector: systemctl --user start data-monitor-collector)")
+        return 0
+    width = max([len(a["app"]) for a in apps] + [4])
+    for a in apps:
+        print(f"{a['app']:<{width}}  down {format_bytes(a['rx_bytes']):>9}"
+              f"  up {format_bytes(a['tx_bytes']):>9}"
+              f"  total {format_bytes(a['total_bytes']):>9}")
+    print(f"{'TOTAL (all)':<{width}}  total {format_bytes(t['total_bytes']):>9}"
+          f"   [per-app is best-effort]")
+    return 0
+
+
+def cmd_history(args):
+    st = Storage()
+    rows = st.get_history(days=args.days)
+    if not rows:
+        print("No history yet.")
+        return 0
+    for r in rows:
+        print(f"{r['date']}  total {format_bytes(r['total_bytes']):>9}"
+              f"  (down {format_bytes(r['rx_bytes'])}, up {format_bytes(r['tx_bytes'])})")
+    return 0
+
+
+def cmd_popup(args):
+    here = os.path.dirname(os.path.realpath(__file__))
+    os.execv(sys.executable, [sys.executable, os.path.join(here, "dm-popup")])
+    return 0
+
+
+def cmd_collect(args):
+    here = os.path.dirname(os.path.realpath(__file__))
+    os.execv(sys.executable, [sys.executable, os.path.join(here, "dm-collector")])
+    return 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="data-monitor", description="Lightweight data usage monitor")
+    sub = p.add_subparsers(dest="cmd")
+
+    s = sub.add_parser("sample"); s.set_defaults(func=cmd_sample)
+    s = sub.add_parser("today"); s.add_argument("--json", action="store_true"); s.set_defaults(func=cmd_today)
+    s = sub.add_parser("panel"); s.set_defaults(func=cmd_panel)
+    s = sub.add_parser("apps"); s.add_argument("--limit", type=int, default=0); s.set_defaults(func=cmd_apps)
+    s = sub.add_parser("history"); s.add_argument("--days", type=int, default=30); s.set_defaults(func=cmd_history)
+    s = sub.add_parser("popup"); s.set_defaults(func=cmd_popup)
+    s = sub.add_parser("collect"); s.set_defaults(func=cmd_collect)
+
+    args = p.parse_args(argv)
+    if not getattr(args, "func", None):
+        p.print_help()
+        return 1
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

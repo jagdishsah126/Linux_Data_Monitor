@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Print today's data total for the XFCE panel (called by xfce4-genmon-plugin).
+
+Fast and read-only in spirit: it takes one cheap sample from /proc/net/dev,
+updates the tiny database, and prints one short line.
+
+Use ``--markup`` to emit genmon's <txt>/<tool> markup (tooltip shows the
+per-application breakdown).
+"""
+from __future__ import annotations
+
+import os
+import sys
+from xml.sax.saxutils import escape
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+
+from counter import read_totals, format_bytes  # noqa: E402
+from storage import Storage                     # noqa: E402
+
+
+def main(argv):
+    markup = "--markup" in argv
+    st = Storage()
+    try:
+        rx, tx = read_totals()
+        st.sample_totals(rx, tx)
+        st.prune()
+    except Exception:
+        # never leave the panel blank because of a transient error
+        pass
+
+    today = st.get_today()
+    text = f"\u25b2\u25bc {format_bytes(today['total_bytes'])}"
+
+    if not markup:
+        print(text)
+        return 0
+
+    lines = [
+        f"Today: {format_bytes(today['total_bytes'])}",
+        f"down {format_bytes(today['rx_bytes'])} / up {format_bytes(today['tx_bytes'])}",
+    ]
+    apps = st.get_today_apps(limit=10)
+    if apps:
+        lines.append("")
+        for a in apps:
+            lines.append(f"{a['app']}  \u2193{format_bytes(a['rx_bytes'])} \u2191{format_bytes(a['tx_bytes'])}")
+    tool = escape("\n".join(lines))
+
+    # Clicking the text opens the per-application window. Prefer the space-free
+    # launcher in ~/.local/bin; otherwise quote the project path.
+    local_popup = os.path.expanduser("~/.local/bin/dm-popup")
+    sibling = os.path.join(os.path.dirname(os.path.realpath(__file__)), "dm-popup")
+    click_cmd = local_popup if os.path.exists(local_popup) else f'"{sibling}"'
+
+    sys.stdout.write(
+        f"<txt>{escape(text)}</txt>"
+        f"<tool>{tool}</tool>"
+        f"<txtclick>{escape(click_cmd)}</txtclick>"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
