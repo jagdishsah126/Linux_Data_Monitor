@@ -341,6 +341,16 @@ No root daemon, no firewall, no changes to network configuration.
   - Bytes are tracked per **process** — nethogs' own label (program path + `pid`/`uid`, or a raw
     connection tuple) — so two unrelated counters are never merged into one running total. Only the
     *display* name is grouped, so several Brave processes still show up as a single `brave` row, correctly.
+  - That label's last counter is remembered for as long as nethogs keeps printing the row, and dropped
+    only after **ten minutes of silence** — never merely because the process exited. nethogs `-v 2`
+    (total bytes) prunes nothing, so an exited process is still listed with its final, frozen figure;
+    forgetting it at exit re-counted that figure at every flush. One finished `flatpak-update-worker`
+    hit 3.9 GB in 73 minutes that way, on a day with 56 MB on the wire. `tests/test_nethogs_parse.py`
+    keeps the exact shape of it as a regression.
+  - Because those labels are kept, nethogs is recycled once 5000 of them have accumulated, which also
+    bounds its own growth over weeks of uptime (counters restart from zero; nothing is re-counted).
+  - `Unknown` may exceed a short day's total: it is what nethogs could not attribute, and duplicate
+    attribution there is a nethogs-side artefact, not real traffic. It never affects the exact total.
   - Per-app rows **will not sum exactly** to the total (that's expected; we show the difference as "Unknown" rather than hiding it).
 - ⚠️ **First day only:** today's total starts counting from the moment the tool was first installed, so it
   may understate the first few hours of day one. Every following day is complete (and a mid-day reboot is

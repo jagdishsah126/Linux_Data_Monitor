@@ -36,6 +36,20 @@ TOTALS_EVERY = float(os.environ.get("DATA_MONITOR_TOTALS", "30"))
 APP_FLUSH = float(os.environ.get("DATA_MONITOR_FLUSH", "30"))
 PRUNE_EVERY = 3600.0
 
+# Set DATA_MONITOR_DEBUG=1 to log every row nethogs prints, with the delta it
+# produces.  This is the only way to see nethogs' side of the accounting: the
+# stored totals cannot tell a real transfer from a counter that keeps being
+# re-counted, so a per-app figure that looks impossible is diagnosed here.
+DEBUG = os.environ.get("DATA_MONITOR_DEBUG", "") == "1"
+DEBUG_BIG = 1 << 20                    # log the raw line for deltas over 1 MiB
+
+# nethogs -v 2 never forgets a process, so the labels we must remember to keep
+# its counters honest also never go away.  Well before that becomes a memory
+# problem (the collector is capped at MemoryMax=128M), recycle nethogs: the new
+# instance starts every counter from zero and a fresh accumulator matches it, so
+# nothing is added twice.  A few seconds of per-app detail is lost per recycle.
+MAX_LABELS = 5000
+
 _stop = threading.Event()
 
 
@@ -68,11 +82,18 @@ def run_nethogs(st: Storage) -> None:
     last_flush = time.time()
 
     def flush() -> None:
-        # Reclaim the labels of processes that have exited.  Each one is a full
-        # nethogs command line, so they are worth reclaiming; live labels (and
-        # labels with no pid at all) keep their baseline or their whole counter
-        # would be counted a second time.
-        acc.evict_dead(lambda pid: os.path.exists(f"/proc/{pid}"))
+        # Forget labels only once nethogs has stopped printing them.
+        #
+        # Do not evict on "the pid is gone": in trace mode nethogs 0.8.7 prunes
+        # exited processes only in its rate view modes, and this monitor needs
+        # -v 2 (total bytes).  A dead process therefore keeps being printed with
+        # its final, frozen counter.  Dropping its baseline on pid death made
+        # every flush treat that frozen counter as a new process and add all of
+        # it again - one exited flatpak-update-worker was re-counted up to 27 MB
+        # every 30 s and reached 3.9 GB on a day with 56 MB on the wire.
+        evicted = acc.evict_stale()
+        if DEBUG and evicted:
+            log(f"evicted {evicted} stale nethogs label(s)")
         if pending:
             st.add_app_deltas(pending)
             pending.clear()
@@ -93,7 +114,16 @@ def run_nethogs(st: Storage) -> None:
             # Key the delta on nethogs' own per-process label, never on the
             # display name: unrelated processes share a name ("brave",
             # "Unknown"), and their counters share no baseline.
-            d_tx, d_rx = acc.feed(entry.key, entry.sent, entry.recv, entry.pid)
+            d_tx, d_rx = acc.feed(entry.key, entry.sent, entry.recv)
+            if DEBUG:
+                log(
+                    f"row app={entry.app!r} pid={entry.pid} uid={entry.uid} "
+                    f"sent={entry.sent} recv={entry.recv} "
+                    f"d_tx={d_tx} d_rx={d_rx} key={entry.key!r}"
+                )
+                if d_rx > DEBUG_BIG or d_tx > DEBUG_BIG:
+                    alive = os.path.exists(f"/proc/{entry.pid}") if entry.pid else None
+                    log(f"BIG pid_alive={alive} raw={line.rstrip()!r}")
             if d_rx or d_tx:
                 total = pending.setdefault(entry.app, [0, 0])
                 total[0] += d_rx
@@ -101,6 +131,12 @@ def run_nethogs(st: Storage) -> None:
             if time.time() - last_flush >= APP_FLUSH:
                 flush()
                 last_flush = time.time()
+            if acc.label_count() > MAX_LABELS:
+                log(
+                    f"{acc.label_count()} nethogs labels remembered; recycling "
+                    "nethogs to reclaim them (trace mode never prunes)"
+                )
+                break
     finally:
         flush()                       # never lose the last partial window
         try:

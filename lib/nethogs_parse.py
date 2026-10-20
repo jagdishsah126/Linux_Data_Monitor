@@ -15,9 +15,16 @@ and never raises on a malformed line.
 from __future__ import annotations
 
 import re
-from typing import Callable, Dict, Iterator, NamedTuple, Optional, Tuple
+import time
+from typing import Dict, Iterator, NamedTuple, Optional, Tuple
 
 UNKNOWN_NAMES = {"unknown", "unknown tcp", "unknown udp", "unknown ip"}
+
+#: How long a label may go unprinted before its baseline is forgotten.  nethogs
+#: prints every row it knows about on every refresh, so a label that has been
+#: silent for minutes is genuinely gone.  Ten minutes is a wide margin over the
+#: 5 s refresh, and the only defence needed against a slow feed.
+DEFAULT_STALE_AFTER = 600.0
 
 # nethogs sometimes labels traffic it cannot tie to a process with the raw
 # connection tuple (e.g. "10.0.0.5:443-10.0.0.9:52133").  Those are still
@@ -108,17 +115,28 @@ class TraceAccumulator:
     like a counter reset, so the full value gets re-added over and over - which
     is what once inflated the per-application totals by orders of magnitude.
 
-    Keys are only forgotten when their process is provably gone
-    (:meth:`evict_dead`): a label without a pid, or one whose pid is still
-    alive, must keep its baseline or its whole counter would be counted again.
+    A baseline is forgotten only once its row stops being printed
+    (:meth:`evict_stale`).  Expiry is measured from the last time the row was
+    *seen*, never from whether its process still exists: in trace mode nethogs
+    0.8.7 only prunes exited processes in its rate view modes - ``-v 2`` (total
+    bytes), which is what this monitor uses, keeps printing them forever.  The
+    row's counter is frozen at its final value, so dropping its baseline makes
+    the next refresh look like a brand new process and re-counts that whole
+    counter, every flush, for as long as nethogs remembers it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, stale_after: float = DEFAULT_STALE_AFTER) -> None:
+        self.stale_after = float(stale_after)
         self._last: Dict[str, Tuple[int, int]] = {}
-        self._pids: Dict[str, int] = {}
+        self._seen: Dict[str, float] = {}
+        self._last_feed = 0.0
 
     def feed(
-        self, key: str, sent: int, recv: int, pid: Optional[int] = None
+        self,
+        key: str,
+        sent: int,
+        recv: int,
+        now: Optional[float] = None,
     ) -> Tuple[int, int]:
         """Return ``(d_tx, d_rx)`` for ``key`` since the previous feed.
 
@@ -133,28 +151,43 @@ class TraceAccumulator:
         else:
             d_sent, d_recv = sent - prev[0], recv - prev[1]
         self._last[key] = (sent, recv)
-        if pid:
-            self._pids[key] = pid
+        self._last_feed = time.monotonic() if now is None else now
+        self._seen[key] = self._last_feed
         return d_sent, d_recv
 
-    def evict_dead(self, alive: Callable[[int], bool]) -> int:
-        """Forget labels whose process no longer exists; return how many.
+    def evict_stale(
+        self, max_age: Optional[float] = None, now: Optional[float] = None
+    ) -> int:
+        """Forget labels nethogs has stopped printing; return how many.
 
-        nethogs keeps listing a process for as long as it lives, so a label
-        carrying a pid that is gone can never be updated again - and those
-        labels are large (nethogs prints the whole command line).  Labels
-        without a pid (raw connection tuples) are deliberately kept: they
-        cannot be proven dead, and dropping a live one would re-count it.
+        A label is only ever dropped after it has been silent for ``max_age``
+        seconds (default :data:`DEFAULT_STALE_AFTER`), because that is the only
+        thing that proves nethogs is done with it.  Labels are large (nethogs
+        prints the whole command line), so dead rows do get reclaimed - just
+        after the row itself is gone.
+
+        If the feed as a whole has stalled (suspend, hung nethogs) silence says
+        nothing about any individual row, so nothing is dropped: the counters
+        are still cumulative and the stored baselines are still valid.
         """
-        dead = [key for key, pid in self._pids.items() if not alive(pid)]
-        for key in dead:
+        now = time.monotonic() if now is None else now
+        max_age = self.stale_after if max_age is None else max_age
+        if not self._seen or now - self._last_feed > max_age:
+            return 0
+        stale = [key for key, seen in self._seen.items() if now - seen > max_age]
+        for key in stale:
             self._last.pop(key, None)
-            self._pids.pop(key, None)
-        return len(dead)
+            self._seen.pop(key, None)
+        return len(stale)
+
+    def label_count(self) -> int:
+        """How many labels are remembered (one per row nethogs is printing)."""
+        return len(self._last)
 
     def reset(self) -> None:
         self._last.clear()
-        self._pids.clear()
+        self._seen.clear()
+        self._last_feed = 0.0
 
 
 def iter_trace_lines(stream) -> Iterator[str]:

@@ -195,6 +195,18 @@ TOTAL (all)                  total  98.1 MB   [per-app is best-effort]
   also read slightly over, because the two series are sampled by two independent 30-second cycles
   that are not phase-aligned. A gap of tens of percent over minutes is normal; a *multiple* is not,
   and would be a bug.
+- ℹ️ **A row can outlive its process.** In trace mode `nethogs` never forgets a process it has seen
+  (`-v 2`, total bytes, prunes nothing — only its rate modes do), so a finished app can keep being
+  listed with its final figure, and a long-running one just keeps growing under the same name. Those
+  bytes are counted **once**: each row's last counter is remembered, so a frozen row adds nothing.
+  Getting this wrong is expensive — an earlier build forgot a row as soon as its process exited,
+  which re-counted the whole frozen figure at every flush, and one finished `flatpak-update-worker`
+  reached 3.9 GB on a day that carried 56 MB.
+- ⚠️ **`Unknown` can be larger than a short day's total.** It is a bucket for everything `nethogs`
+  could not tie to a process, and on this machine it has been seen to exceed the interface's own
+  receive count (96 MB recorded against 65 MB on the wire), which means duplicate attribution inside
+  `nethogs` rather than real traffic. It is reported as-is and never folded into the total; the exact
+  total is unaffected. `DATA_MONITOR_DEBUG=1` records the raw rows if you want to chase it.
 - ⚠️ **Per-app figures only exist from the moment the capability is granted** — there is no history
   to back-fill.
 - ⚠️ **The first day is partial.** Today's total starts counting when the tool is first installed, so
@@ -220,6 +232,7 @@ finer-grained record:
 | `DATA_MONITOR_EXCLUDE` | `docker*,veth*,virbr*,br-*,vmnet*,vboxnet*` | comma-separated globs of interfaces to leave out of the total. Set it to the empty string to count everything except loopback, or add `tun*,wg*` if you use a VPN and want only the physical side |
 | `DATA_MONITOR_DB` | `~/.local/share/data-monitor/monitor.db` | where the history lives |
 | `DATA_MONITOR_PANEL` | *(detected)* | panel to add the widget to; same as `setup-panel.sh --panel N` |
+| `DATA_MONITOR_DEBUG` | *(unset)* | `1` logs every raw `nethogs` row and the delta it produced. This is the only view of `nethogs`' side of the accounting, so it is the tool to reach for if a per-app figure ever looks impossible |
 
 Lowering them costs disk writes, not network data: the tool itself never uses the network.
 

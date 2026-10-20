@@ -157,7 +157,7 @@ class ParseAndAccumulateTests(unittest.TestCase):
         for line in lines:
             entry = parse_trace_line(line)
             self.assertIsNotNone(entry)
-            d_tx, _d_rx = acc.feed(entry.key, entry.sent, entry.recv, entry.pid)
+            d_tx, _d_rx = acc.feed(entry.key, entry.sent, entry.recv)
             total += d_tx
         # 1000 + 2000 + 500 + 600.  Merging the two counters (what a key
         # without the pid does) would have reported 1000+2000+1500+2600 = 7100.
@@ -174,27 +174,66 @@ class ParseAndAccumulateTests(unittest.TestCase):
         ]:
             entry = parse_trace_line(line)
             self.assertIsNotNone(entry)
-            d_tx, _d_rx = acc.feed(entry.key, entry.sent, entry.recv, entry.pid)
+            d_tx, _d_rx = acc.feed(entry.key, entry.sent, entry.recv)
             total += d_tx
         self.assertEqual(total, 339)          # not 339 counted twice
 
-    def test_evict_dead_reclaims_finished_processes_only(self):
+    def test_eviction_only_reclaims_rows_nethogs_stopped_printing(self):
         acc = TraceAccumulator()
-        acc.feed("brave/100/1000", 100, 100, pid=100)
-        acc.feed("brave/200/1000", 50, 50, pid=200)
-        acc.feed("unknown TCP/0/0", 1, 1, pid=0)
-        acc.feed("10.0.0.5:443-10.0.0.9:52133", 5, 5, pid=None)
+        acc.feed("brave/100/1000", 100, 100)
+        acc.feed("brave/200/1000", 50, 50)
+        acc.feed("unknown TCP/0/0", 1, 1)
+        acc.feed("10.0.0.5:443-10.0.0.9:52133", 5, 5)
 
-        alive = {200}.__contains__
-        self.assertEqual(acc.evict_dead(alive), 1)
-        self.assertEqual(acc.evict_dead(alive), 0)
+        now = 1_000_000.0
+        # every row is still being printed, so nothing may be forgotten
+        for key, sent, recv in [
+            ("brave/100/1000", 100, 100),
+            ("brave/200/1000", 50, 50),
+            ("unknown TCP/0/0", 1, 1),
+            ("10.0.0.5:443-10.0.0.9:52133", 5, 5),
+        ]:
+            acc.feed(key, sent, recv, now=now)
+        self.assertEqual(acc.evict_stale(now=now), 0)
+
+        # "brave/100/1000" stops appearing; after the grace period it is
+        # reclaimed and the others keep their baselines
+        for step in range(1, 200):
+            t = now + step * 5.0
+            acc.feed("brave/200/1000", 50, 50, now=t)
+            acc.feed("10.0.0.5:443-10.0.0.9:52133", 5, 5, now=t)
+            acc.evict_stale(now=t)
         self.assertNotIn("brave/100/1000", acc._last)
-        # a label that is still alive keeps its baseline, so its counter is
-        # never counted a second time
-        self.assertEqual(acc.feed("brave/200/1000", 80, 90, pid=200), (30, 40))
-        # labels with no pid cannot be proven dead, so they are kept on purpose
-        self.assertIn("unknown TCP/0/0", acc._last)
-        self.assertIn("10.0.0.5:443-10.0.0.9:52133", acc._last)
+        self.assertEqual(acc.feed("brave/200/1000", 80, 90, now=now + 1000), (30, 40))
+        self.assertEqual(
+            acc.feed("10.0.0.5:443-10.0.0.9:52133", 9, 9, now=now + 1000), (4, 4)
+        )
+
+    def test_row_nethogs_keeps_printing_is_never_recounted(self):
+        # Regression (2nd time): in trace mode nethogs 0.8.7 prunes exited
+        # processes only in its *rate* view modes.  With "-v 2" (total bytes)
+        # a dead process's row keeps coming with its final frozen counter, so
+        # forgetting the baseline on "pid gone" re-added that whole counter at
+        # every flush: one exited flatpak-update-worker reached 3.9 GB while
+        # the interface had carried 56 MB.
+        key = "/usr/libexec/flatpak-update-worker/4242/1000"
+        acc = TraceAccumulator()
+        added = 0
+        for step in range(0, 720):                    # one hour at 5 s refresh
+            t = float(step * 5)
+            added += acc.feed(key, 0, 27_000_000, now=t)[1]
+            acc.feed("/usr/bin/brave/77/1000", 10, 10, now=t)
+            if t % 30 == 0:
+                acc.evict_stale(now=t)
+        self.assertEqual(added, 27_000_000)           # counted once, not 120 times
+
+    def test_stalled_feed_keeps_baselines(self):
+        # Laptop suspend: nothing was seen for an hour, so silence says nothing
+        # about any individual row and every baseline is still valid.
+        acc = TraceAccumulator(stale_after=600)
+        acc.feed("a/1/1000", 5, 5, now=0.0)
+        self.assertEqual(acc.evict_stale(now=3600.0), 0)
+        self.assertEqual(acc.feed("a/1/1000", 9, 9, now=3601.0), (4, 4))
 
 
 if __name__ == "__main__":
